@@ -19,40 +19,45 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-#ifndef DRAWDANCE_APP_H
-#define DRAWDANCE_APP_H
+#ifndef DRAWDANCE_UI_H
+#define DRAWDANCE_UI_H
 #include <dpcommon/common.h>
 #include <SDL.h>
+#include <SDL_mouse.h>
 
-typedef struct DP_UserInputs DP_UserInputs;
-typedef struct DP_Worker DP_Worker;
+#define DP_UI_MOUSE_BUTTON_MIN SDL_BUTTON_LEFT
+#define DP_UI_MOUSE_BUTTON_MAX SDL_BUTTON_X2
+#define DP_UI_MOUSE_BUTTON_COUNT \
+    (DP_UI_MOUSE_BUTTON_MAX - DP_UI_MOUSE_BUTTON_MIN + 1)
+
+#define DP_UI_HELD     (1 << 1)
+#define DP_UI_PRESSED  (1 << 2)
+#define DP_UI_RELEASED (1 << 3)
 
 
-typedef struct DP_App DP_App;
-typedef struct DP_CanvasState DP_CanvasState;
-typedef struct DP_Document DP_Document;
+typedef struct DP_UserInputs {
+    unsigned long long frequency;
+    unsigned long long last_frame_time;
+    double delta_time;
+    int mouse_delta_x, mouse_delta_y;
+    int mouse_wheel_x, mouse_wheel_y;
+    SDL_SystemCursor next_cursor_id;
+    SDL_Cursor *cursors[SDL_NUM_SYSTEM_CURSORS];
+    uint8_t scan_codes[SDL_NUM_SCANCODES];
+    uint8_t mouse_buttons[DP_UI_MOUSE_BUTTON_COUNT];
+} DP_UserInputs;
 
-DP_App *DP_app_new(SDL_Window *window, SDL_GLContext gl_context);
+void DP_user_inputs_init(DP_UserInputs *inputs);
 
-void DP_app_free(DP_App *app);
+void DP_user_inputs_dispose(DP_UserInputs *inputs);
 
-void DP_app_run(DP_App *app);
+void DP_user_inputs_next_frame(DP_UserInputs *inputs);
 
-DP_CanvasState *DP_app_current_canvas_state_noinc(DP_App *app);
+void DP_user_inputs_handle(DP_UserInputs *inputs, SDL_Event *event);
 
-void DP_app_document_set(DP_App *app, DP_Document *doc_or_null);
+void DP_user_inputs_cursor_set(DP_UserInputs *inputs, SDL_SystemCursor id);
 
-void DP_app_canvas_renderer_transform(DP_App *app, double *out_x, double *out_y,
-                                      double *out_scale,
-                                      double *out_rotation_in_radians);
-
-void DP_app_canvas_renderer_transform_set(DP_App *app, double x, double y,
-                                          double scale,
-                                          double rotation_in_radians);
-
-DP_Worker *DP_app_worker(DP_App *app);
-
-DP_UserInputs *DP_app_inputs(DP_App *app);
+void DP_user_inputs_render(DP_UserInputs *inputs);
 
 
 #endif

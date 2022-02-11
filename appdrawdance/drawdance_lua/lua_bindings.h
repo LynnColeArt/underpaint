@@ -58,7 +58,9 @@ void DP_lua_app_free(lua_State *L, int ref);
 
 void DP_lua_app_handle_events(lua_State *L, int ref);
 
+#ifdef DRAWDANCE_IMGUI
 void DP_lua_app_prepare_gui(lua_State *L, int ref);
+#endif
 
 
 void DP_lua_warn_buffer_dispose(DP_LuaWarnBuffer *wb);
