@@ -1,4 +1,0 @@
-REDACTED <redacted@example.invalid>
-Colin Snover <github.com@zetafleet.com>
-cow <103213068+cow54787@users.noreply.github.com>
-cow54787 <103213068+cow54787@users.noreply.github.com>
