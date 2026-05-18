@@ -86,6 +86,7 @@ source layers + mask/region + parameters -> AI job -> candidate layer group
 Tasks:
 
 - Define AI job request/response schema.
+- Add C++ request/response types for the schema.
 - Export active selection or region as image plus mask.
 - Include source metadata and operation parameters.
 - Add a local worker process stub.
@@ -94,6 +95,7 @@ Tasks:
 
 Acceptance criteria:
 
+- The job schema is documented and available to C++ editor code.
 - The app can submit a selected region to a worker and receive a new candidate layer.
 - The worker can crash or fail without crashing the app.
 - The result is undoable or removable through normal layer behavior.

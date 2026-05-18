@@ -52,6 +52,8 @@ target_sources(drawpile PRIVATE
 	settings.h
 	tabletinput.cpp
 	tabletinput.h
+	ai/aijob.cpp
+	ai/aijob.h
 	chat/chatbox.cpp
 	chat/chatbox.h
 	chat/chatwidget.cpp

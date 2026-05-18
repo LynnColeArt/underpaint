@@ -4,6 +4,10 @@ Underpaint is a C++/Qt desktop application with an out-of-process AI runtime. Th
 
 This architecture keeps the editor responsive, preserves Drawpile's collaboration/session machinery, and leaves room for Python, ONNX Runtime, TensorRT, cloud workers, and future native providers.
 
+The initial editor-to-worker contract is documented in
+`docs/ai-job-contract.md` and represented in C++ by
+`src/desktop/ai/aijob.h`.
+
 ## System Boundary
 
 ```text
@@ -249,4 +253,3 @@ The first architecture slice should prove:
 6. Keep the app responsive if the worker fails.
 
 The worker can be a placeholder at first. The milestone is the boundary and artifact loop, not model quality.
-
