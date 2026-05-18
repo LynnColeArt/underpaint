@@ -5,6 +5,8 @@ extern "C" {
 #include "cmake-config/config.h"
 #include "desktop/chat/chatbox.h"
 #include "desktop/dialogs/abusereport.h"
+#include "desktop/dialogs/aimodelmanagerdialog.h"
+#include "desktop/dialogs/aipreferencesdialog.h"
 #include "desktop/dialogs/animationexportdialog.h"
 #include "desktop/dialogs/animationimportdialog.h"
 #include "desktop/dialogs/brushsettingsdialog.h"
@@ -7598,16 +7600,28 @@ void MainWindow::setupActions()
 			   "resize."));
 	});
 	connect(aiModelManager, &QAction::triggered, this, [=] {
-		showAiPlaceholder(
-			tr("Model Manager"),
-			tr("The model manager will track local model files, model roles, "
-			   "VRAM requirements, and download or install state."));
+		QString objectName = QStringLiteral("aimodelmanagerdialog");
+		dialogs::AiModelManagerDialog *dlg =
+			findChild<dialogs::AiModelManagerDialog *>(
+				objectName, Qt::FindDirectChildrenOnly);
+		if(!dlg) {
+			dlg = new dialogs::AiModelManagerDialog(this);
+			dlg->setAttribute(Qt::WA_DeleteOnClose);
+			dlg->setObjectName(objectName);
+		}
+		utils::showWindow(dlg, shouldShowDialogMaximized());
 	});
 	connect(aiPreferences, &QAction::triggered, this, [=] {
-		showAiPlaceholder(
-			tr("AI Preferences"),
-			tr("AI preferences will hold default candidate counts, render "
-			   "limits, model unloading policy, and per-operation defaults."));
+		QString objectName = QStringLiteral("aipreferencesdialog");
+		dialogs::AiPreferencesDialog *dlg =
+			findChild<dialogs::AiPreferencesDialog *>(
+				objectName, Qt::FindDirectChildrenOnly);
+		if(!dlg) {
+			dlg = new dialogs::AiPreferencesDialog(this);
+			dlg->setAttribute(Qt::WA_DeleteOnClose);
+			dlg->setObjectName(objectName);
+		}
+		utils::showWindow(dlg, shouldShowDialogMaximized());
 	});
 
 	QMenu *aiMenu = menuBar()->addMenu(tr("AI"));

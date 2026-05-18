@@ -94,6 +94,10 @@ target_sources(drawpile PRIVATE
 	dialogs/animationimportdialog.h
 	dialogs/animationpropertiesdialog.cpp
 	dialogs/animationpropertiesdialog.h
+	dialogs/aimodelmanagerdialog.cpp
+	dialogs/aimodelmanagerdialog.h
+	dialogs/aipreferencesdialog.cpp
+	dialogs/aipreferencesdialog.h
 	dialogs/artisticcolorwheeldialog.cpp
 	dialogs/artisticcolorwheeldialog.h
 	dialogs/avatarimport.cpp

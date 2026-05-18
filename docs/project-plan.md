@@ -139,6 +139,8 @@ Acceptance criteria:
 
 Goal: make AI behavior predictable and user-configurable.
 
+Status: initial preferences shell exists in the desktop client.
+
 Tasks:
 
 - Add AI Preferences page.
@@ -157,6 +159,8 @@ Acceptance criteria:
 ## Milestone 7: Model Manager
 
 Goal: manage model capabilities, licenses, installs, providers, and memory behavior.
+
+Status: initial model-role inventory shell exists in the desktop client.
 
 Tasks:
 
