@@ -3,6 +3,7 @@ extern "C" {
 #include <dpengine/project.h>
 }
 #include "cmake-config/config.h"
+#include "desktop/ai/aijobrunner.h"
 #include "desktop/chat/chatbox.h"
 #include "desktop/dialogs/abusereport.h"
 #include "desktop/dialogs/aimodelmanagerdialog.h"
@@ -116,6 +117,7 @@ extern "C" {
 #include <QImageWriter>
 #include <QInputDialog>
 #include <QJsonDocument>
+#include <QJsonObject>
 #include <QKeySequence>
 #include <QLabel>
 #include <QMenuBar>
@@ -7586,11 +7588,71 @@ void MainWindow::setupActions()
 			   "behind separated objects."));
 	});
 	connect(aiGenerativeFill, &QAction::triggered, this, [=] {
-		showAiPlaceholder(
-			tr("Generative Fill"),
-			tr("Generative fill will use the current selection as an "
-			   "intentional restoration region with prompt, seed, CFG, "
-			   "denoise, and candidate controls."));
+		ai::JobRequest request =
+			ai::JobRequest::create(ai::Operation::GenerativeFill);
+		request.parameters = QJsonObject{
+			{QStringLiteral("prompt"), QString()},
+			{QStringLiteral("negativePrompt"), QString()},
+			{QStringLiteral("seed"), -1},
+			{QStringLiteral("cfg"), 5.0},
+			{QStringLiteral("denoise"), 0.75},
+			{QStringLiteral("candidateCount"), 1},
+		};
+		request.preferences = QJsonObject{
+			{QStringLiteral("maxRenderEdge"), 1024},
+			{QStringLiteral("variantMode"), QStringLiteral("sequential")},
+			{QStringLiteral("unloadPolicy"), QStringLiteral("idle")},
+			{QStringLiteral("vaeTiling"), true},
+			{QStringLiteral("cacheGuides"), true},
+			{QStringLiteral("safe4070Mode"), true},
+		};
+
+		canvas::CanvasModel *canvas = m_doc->canvas();
+		QRect region;
+		QString selectionSource = QStringLiteral("full-canvas-placeholder");
+		if(canvas) {
+			canvas::SelectionModel *selection = canvas->selection();
+			if(selection && selection->isValid()) {
+				region = selection->bounds();
+				selectionSource = QStringLiteral("current-selection");
+			} else {
+				region = QRect(QPoint(), canvas->size());
+			}
+		}
+		request.region = QJsonObject{
+			{QStringLiteral("x"), region.x()},
+			{QStringLiteral("y"), region.y()},
+			{QStringLiteral("width"), region.width()},
+			{QStringLiteral("height"), region.height()},
+			{QStringLiteral("contextPadding"), 128},
+		};
+		request.source = QJsonObject{
+			{QStringLiteral("activeLayerId"), m_doc->toolCtrl()->activeLayer()},
+			{QStringLiteral("selectionSource"), selectionSource},
+		};
+		request.provenance = QJsonObject{
+			{QStringLiteral("createdBy"), QStringLiteral("underpaint")},
+			{QStringLiteral("uiEntryPoint"), QStringLiteral("AI/Generative Fill")},
+		};
+
+		utils::ScopedOverrideCursor cursor;
+		ai::JobRunResult result = ai::JobRunner::run(request);
+		if(!result.ok) {
+			showErrorMessageWithDetails(
+				tr("Generative fill worker failed."), result.errorMessage);
+			return;
+		}
+
+		QString details = tr("Job directory: %1").arg(result.jobDirectoryPath);
+		if(!result.response.candidates.isEmpty()) {
+			const ai::JobCandidate &candidate =
+				result.response.candidates.constFirst();
+			details += tr("\nCandidate image: %1").arg(candidate.imagePath);
+		}
+		utils::showInformation(
+			this, tr("Generative Fill"),
+			tr("The local AI worker returned a placeholder candidate."),
+			details);
 	});
 	connect(aiOutpaint, &QAction::triggered, this, [=] {
 		showAiPlaceholder(

@@ -98,6 +98,7 @@ Acceptance criteria:
 
 - The job schema is documented and available to C++ editor code.
 - The editor has a native runner for request/response worker execution.
+- Generative Fill can run a placeholder worker job from the desktop menu.
 - The app can submit a selected region to a worker and receive a new candidate layer.
 - The worker can crash or fail without crashing the app.
 - The result is undoable or removable through normal layer behavior.
