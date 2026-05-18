@@ -2,13 +2,13 @@
 
 Underpaint is an experimental GPLv3 fork of [Drawpile](https://github.com/drawpile/Drawpile) exploring a local-first AI photo restoration and image reconstruction workspace.
 
-The short version: we want Photoshop-accessible AI restoration features with deeper control, expressed through layers and masks instead of node graphs.
+The short version: we want AI restoration features that are approachable at first touch, but still precise enough for controlled image work, expressed through layers and masks instead of node graphs.
 
 Underpaint is early. The current codebase is still mostly Drawpile, and that is intentional. Drawpile already has a serious collaborative paint editor foundation: canvas state, layers, masks, selections, transforms, import/export, project recordings, session history, chat, permissions, server hosting, and reconnect behavior. Those systems are interesting raw material for an AI restoration tool where generated work should become inspectable, editable artifacts rather than invisible magic.
 
 ## What Makes This Fork Interesting
 
-Most AI image tools either hide too much behind a prompt box or expose too much through node graphs. Underpaint is aiming for a different shape:
+Many AI image workflows either hide too much behind a single prompt or expose too much as technical plumbing. Underpaint is aiming for a different shape:
 
 - **Original image stays sacred.** AI operations should create new layers, masks, maps, and candidate groups instead of destructively changing the source.
 - **AI output is material.** A background removal produces a cutout and matte. A depth pass produces a visible guide layer. An inpaint produces candidate patch layers. A scene separation pass produces editable regions.
@@ -23,8 +23,8 @@ Most AI image tools either hide too much behind a prompt box or expose too much 
 The current product thesis is:
 
 ```text
-Photoshop-level accessibility
-+ ComfyUI-level power
+approachable restoration tools
++ deep procedural control
 + layers and masks instead of node graphs
 ```
 
@@ -90,4 +90,3 @@ This fork keeps Drawpile provenance visible while exploring a different product 
 Underpaint is based on Drawpile and remains under GPLv3. See [LICENSE.txt](LICENSE.txt).
 
 Model weights and AI providers have their own licenses. Underpaint tracks model license and commercial-use status as a first-class model-manager concern.
-
