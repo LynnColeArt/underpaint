@@ -30,6 +30,10 @@ Additional packages installed after the first failed probe:
 libqt5websockets5-dev
 libsystemd-dev
 libsodium-dev
+qttools5-dev-tools
+libkf5archive-dev
+libzip-dev
+libqt5svg5-dev
 ```
 
 ## Preset Shape
@@ -232,8 +236,71 @@ cmake --build build-qt5-server-baseline
 ./build-qt5-server-baseline/bin/drawpile-srv --help
 ```
 
+## Qt5 Client Baseline: Working
+
+Additional package needed after the server baseline:
+
+```text
+libqt5svg5-dev
+```
+
+Configure command:
+
+```bash
+cmake -S . -B build-qt5-client-baseline -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DQT_VERSION=5 \
+  -DCLIENT=ON \
+  -DSERVER=OFF \
+  -DSERVERGUI=OFF \
+  -DBUILTINSERVER=OFF \
+  -DTESTS=OFF \
+  -DTOOLS=OFF \
+  -DUPDATE_TRANSLATIONS=OFF \
+  -DUSE_GENERATORS=OFF
+```
+
+Initial client blocker before installing `libqt5svg5-dev`:
+
+```text
+Could not find a package configuration file provided by "Qt5Svg"
+with any of the following names:
+
+  Qt5SvgConfig.cmake
+  qt5svg-config.cmake
+```
+
+After installing `libqt5svg5-dev`, configure succeeded and generated build files in `build-qt5-client-baseline/`.
+
+Build command:
+
+```bash
+cmake --build build-qt5-client-baseline
+```
+
+Build result:
+
+```text
+[565/565] Linking CXX executable bin/drawpile
+```
+
+Smoke checks:
+
+```bash
+./build-qt5-client-baseline/bin/drawpile --version
+./build-qt5-client-baseline/bin/drawpile --help
+```
+
+Version output:
+
+```text
+drawpile 2.3.1-beta.1-12-gef0dba47a
+```
+
+The `--help` output printed the expected client command-line usage.
+
 ## Next Baseline Targets
 
 - Qt5 server with tests enabled.
-- Qt5 client configure.
 - Qt6 server configure once Qt6 dev packages are installed.
