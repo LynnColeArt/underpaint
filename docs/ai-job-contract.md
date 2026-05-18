@@ -160,8 +160,13 @@ should also live in the job directory until the editor imports them.
 
 1. Export the current selection as a source crop and mask.
 2. Write a request JSON file.
-3. Launch a local worker stub with the request path.
+3. Launch the local `underpaint-ai-worker-stub` with the request path,
+   response path, and job directory.
 4. Have the worker return a placeholder image candidate.
 5. Import the candidate as a normal layer.
 6. Attach request/response provenance to the imported layer or group.
 
+The first native runner lives in `src/desktop/ai/aijobrunner.h`. It creates a
+temporary job directory, writes `request.json`, launches the worker with
+`QProcess`, reads `response.json`, and reports process or parse failures
+without crashing the editor.

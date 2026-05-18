@@ -18,6 +18,18 @@ QJsonArray assetsToJson(const QVector<JobAsset> &assets)
 	return array;
 }
 
+QVector<JobAsset> assetsFromJson(const QJsonArray &array)
+{
+	QVector<JobAsset> assets;
+	assets.reserve(array.size());
+	for(const QJsonValue &value : array) {
+		if(value.isObject()) {
+			assets.append(JobAsset::fromJsonObject(value.toObject()));
+		}
+	}
+	return assets;
+}
+
 QJsonArray candidatesToJson(const QVector<JobCandidate> &candidates)
 {
 	QJsonArray array;
@@ -247,6 +259,31 @@ QJsonObject JobRequest::toJsonObject() const
 QJsonDocument JobRequest::toJsonDocument() const
 {
 	return QJsonDocument(toJsonObject());
+}
+
+JobRequest JobRequest::fromJsonObject(const QJsonObject &json)
+{
+	bool operationOk = false;
+	JobRequest request;
+	request.id = json.value(QStringLiteral("id")).toString();
+	request.operation = operationFromKey(
+		json.value(QStringLiteral("operation")).toString(), &operationOk);
+	if(!operationOk) {
+		request.operation = Operation::GenerativeFill;
+	}
+	request.inputs =
+		assetsFromJson(json.value(QStringLiteral("inputs")).toArray());
+	request.region = json.value(QStringLiteral("region")).toObject();
+	request.parameters = json.value(QStringLiteral("parameters")).toObject();
+	request.preferences = json.value(QStringLiteral("preferences")).toObject();
+	request.source = json.value(QStringLiteral("source")).toObject();
+	request.provenance = json.value(QStringLiteral("provenance")).toObject();
+	return request;
+}
+
+JobRequest JobRequest::fromJsonDocument(const QJsonDocument &document)
+{
+	return fromJsonObject(document.object());
 }
 
 QJsonObject JobResponse::toJsonObject() const

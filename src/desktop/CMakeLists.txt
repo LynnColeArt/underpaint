@@ -54,6 +54,8 @@ target_sources(drawpile PRIVATE
 	tabletinput.h
 	ai/aijob.cpp
 	ai/aijob.h
+	ai/aijobrunner.cpp
+	ai/aijobrunner.h
 	chat/chatbox.cpp
 	chat/chatbox.h
 	chat/chatwidget.cpp
@@ -517,6 +519,24 @@ target_link_libraries(drawpile PRIVATE
 	${QT_PACKAGE_NAME}::Widgets
 	${QT_PACKAGE_NAME}::Xml
 )
+
+if(NOT ANDROID AND NOT EMSCRIPTEN)
+	add_executable(
+		underpaint-ai-worker-stub
+		ai/aijobworkerstub.cpp
+		ai/aijob.cpp
+		ai/aijob.h
+	)
+	dp_sign_executable(underpaint-ai-worker-stub)
+	target_include_directories(
+		underpaint-ai-worker-stub PRIVATE "${PROJECT_SOURCE_DIR}/src")
+	target_link_libraries(
+		underpaint-ai-worker-stub PRIVATE
+		${QT_PACKAGE_NAME}::Core
+		${QT_PACKAGE_NAME}::Gui
+	)
+	add_dependencies(drawpile underpaint-ai-worker-stub)
+endif()
 
 if(AUDIO_IMPL STREQUAL "MINIAUDIO")
 	add_subdirectory(bundled/miniaudio)

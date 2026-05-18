@@ -90,12 +90,14 @@ Tasks:
 - Export active selection or region as image plus mask.
 - Include source metadata and operation parameters.
 - Add a local worker process stub.
+- Add C++ runner that launches the worker out of process.
 - Return a generated or placeholder image as a new layer.
 - Store provenance on the result layer/group.
 
 Acceptance criteria:
 
 - The job schema is documented and available to C++ editor code.
+- The editor has a native runner for request/response worker execution.
 - The app can submit a selected region to a worker and receive a new candidate layer.
 - The worker can crash or fail without crashing the app.
 - The result is undoable or removable through normal layer behavior.

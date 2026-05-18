@@ -70,6 +70,8 @@ struct JobRequest {
 	static JobRequest create(Operation operation);
 	QJsonObject toJsonObject() const;
 	QJsonDocument toJsonDocument() const;
+	static JobRequest fromJsonObject(const QJsonObject &json);
+	static JobRequest fromJsonDocument(const QJsonDocument &document);
 };
 
 struct JobResponse {
