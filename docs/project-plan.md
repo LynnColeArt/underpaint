@@ -44,6 +44,7 @@ Tasks:
 - Build client and server presets.
 - Build a minimal test target.
 - Record known build blockers.
+- Keep the current build probe notes in `docs/build-baseline.md`.
 
 Acceptance criteria:
 
