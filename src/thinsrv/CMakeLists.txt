@@ -198,8 +198,8 @@ if(INSTALL_DOC AND UNIX)
 		"${PROJECT_SOURCE_DIR}/README.md"
 		DESTINATION "${CMAKE_INSTALL_DOCDIR}"
 	)
-	# Trailing slash is required or else it will install into `doc` subdirectory
-	install(DIRECTORY "${PROJECT_SOURCE_DIR}/doc/"
+	# Trailing slash is required or else it will install into `drawpile` subdirectory
+	install(DIRECTORY "${PROJECT_SOURCE_DIR}/docs/drawpile/"
 		DESTINATION "${CMAKE_INSTALL_DOCDIR}"
 	)
 endif()
