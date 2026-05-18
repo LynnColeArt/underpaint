@@ -7549,6 +7549,76 @@ void MainWindow::setupActions()
 		transformshrinktoview, stamp);
 
 	//
+	// AI menu
+	//
+	QAction *aiSceneSeparation =
+		makeAction("ai-scene-separation", tr("Scene &Separation..."))
+			.statusTip(tr("Separate the image into mask-backed layers"))
+			.noDefaultShortcut();
+	QAction *aiGenerativeFill =
+		makeAction("ai-generative-fill", tr("&Generative Fill..."))
+			.statusTip(tr("Fill the current selection with generated variants"))
+			.noDefaultShortcut();
+	QAction *aiOutpaint =
+		makeAction("ai-outpaint", tr("&Outpaint..."))
+			.statusTip(tr("Generate content for an intentional canvas extension"))
+			.noDefaultShortcut();
+	QAction *aiModelManager =
+		makeAction("ai-model-manager", tr("&Model Manager..."))
+			.statusTip(tr("Review local AI models and storage"))
+			.noDefaultShortcut();
+	QAction *aiPreferences =
+		makeAction("ai-preferences", tr("AI &Preferences..."))
+			.statusTip(tr("Configure restoration defaults and candidate counts"))
+			.noDefaultShortcut();
+
+	auto showAiPlaceholder =
+		[this](const QString &title, const QString &message) {
+			QMessageBox::information(this, title, message);
+		};
+	connect(aiSceneSeparation, &QAction::triggered, this, [=] {
+		showAiPlaceholder(
+			tr("Scene Separation"),
+			tr("Scene separation will create mask-backed layers for "
+			   "classifiable image regions, then prepare repair candidates "
+			   "behind separated objects."));
+	});
+	connect(aiGenerativeFill, &QAction::triggered, this, [=] {
+		showAiPlaceholder(
+			tr("Generative Fill"),
+			tr("Generative fill will use the current selection as an "
+			   "intentional restoration region with prompt, seed, CFG, "
+			   "denoise, and candidate controls."));
+	});
+	connect(aiOutpaint, &QAction::triggered, this, [=] {
+		showAiPlaceholder(
+			tr("Outpaint"),
+			tr("Outpaint will be a user-initiated region operation for "
+			   "extending the canvas, not an automatic side effect of canvas "
+			   "resize."));
+	});
+	connect(aiModelManager, &QAction::triggered, this, [=] {
+		showAiPlaceholder(
+			tr("Model Manager"),
+			tr("The model manager will track local model files, model roles, "
+			   "VRAM requirements, and download or install state."));
+	});
+	connect(aiPreferences, &QAction::triggered, this, [=] {
+		showAiPlaceholder(
+			tr("AI Preferences"),
+			tr("AI preferences will hold default candidate counts, render "
+			   "limits, model unloading policy, and per-operation defaults."));
+	});
+
+	QMenu *aiMenu = menuBar()->addMenu(tr("AI"));
+	aiMenu->addAction(aiSceneSeparation);
+	aiMenu->addAction(aiGenerativeFill);
+	aiMenu->addAction(aiOutpaint);
+	aiMenu->addSeparator();
+	aiMenu->addAction(aiModelManager);
+	aiMenu->addAction(aiPreferences);
+
+	//
 	// Animation menu
 	//
 	QAction *showFlipbook = makeAction("showflipbook", tr("Flipbook"))
@@ -8374,6 +8444,8 @@ void MainWindow::setupActions()
 		makeAction("menu-layer", tr("Layer menu")).shortcut("Alt+L");
 	QAction *menuSelectionAction =
 		makeAction("menu-selection", tr("Selection menu")).shortcut("Alt+N");
+	QAction *menuAiAction =
+		makeAction("menu-ai", tr("AI menu")).shortcut("Alt+I");
 	QAction *menuAnimationAction =
 		makeAction("menu-animation", tr("Animation menu")).shortcut("Alt+A");
 	QAction *menuSessionAction =
@@ -8386,7 +8458,8 @@ void MainWindow::setupActions()
 	QPair<QAction *, QMenu *> menuPairs[] = {
 		{menuFileAction, filemenu},		   {menuEditAction, editmenu},
 		{menuViewAction, viewmenu},		   {menuLayerAction, layerMenu},
-		{menuSelectionAction, selectMenu}, {menuAnimationAction, animationMenu},
+		{menuSelectionAction, selectMenu}, {menuAiAction, aiMenu},
+		{menuAnimationAction, animationMenu},
 		{menuSessionAction, sessionmenu},  {menuToolsAction, toolsmenu},
 		{menuHelpAction, helpmenu},
 	};

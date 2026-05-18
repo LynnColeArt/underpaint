@@ -60,6 +60,8 @@ Tasks:
 
 - Keep layers, canvas, masks, and collaboration substrate intact.
 - Introduce restoration-oriented wording and layout.
+- Add top-level AI/restoration actions as intentional user-triggered entry
+  points.
 - Add a first-step flow for opening a photo.
 - Preserve advanced drawing tools where they help mask/repair workflows.
 - Decide which social/collab UI is visible by default.
@@ -67,6 +69,7 @@ Tasks:
 Acceptance criteria:
 
 - User can open an image and understand the restoration workspace.
+- AI operations are visible as explicit actions, not automatic canvas behavior.
 - Collaboration still works or is explicitly hidden behind a stable path.
 - No core Drawpile session behavior is removed without a written reason.
 
