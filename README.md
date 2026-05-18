@@ -1,44 +1,93 @@
-# Drawpile - A Collaborative Drawing Program
+# Underpaint
 
-[![CI status badge](../../actions/workflows/main.yml/badge.svg)](../../actions/workflows/main.yml) [![translation status](https://hosted.weblate.org/widgets/drawpile/-/svg-badge.svg)](https://hosted.weblate.org/engage/drawpile/)
+Underpaint is an experimental GPLv3 fork of [Drawpile](https://github.com/drawpile/Drawpile) exploring a local-first AI photo restoration and image reconstruction workspace.
 
-Drawpile is a drawing program that lets you draw, paint and animate together with others on the same canvas. It runs on Windows, Linux, macOS and Android.
+The short version: we want Photoshop-accessible AI restoration features with deeper control, expressed through layers and masks instead of node graphs.
 
-## Installing
+Underpaint is early. The current codebase is still mostly Drawpile, and that is intentional. Drawpile already has a serious collaborative paint editor foundation: canvas state, layers, masks, selections, transforms, import/export, project recordings, session history, chat, permissions, server hosting, and reconnect behavior. Those systems are interesting raw material for an AI restoration tool where generated work should become inspectable, editable artifacts rather than invisible magic.
 
-Take a look at [the downloads page on drawpile.net](https://drawpile.net/download/) or [the GitHub releases](https://github.com/drawpile/Drawpile/releases).
+## What Makes This Fork Interesting
 
-Instructions on how to compile Drawpile from source are found [on this documentation page](https://docs.drawpile.net/help/development/buildingfromsource).
+Most AI image tools either hide too much behind a prompt box or expose too much through node graphs. Underpaint is aiming for a different shape:
 
-If you're using Arch Linux, you can get Drawpile [from the AUR](https://aur.archlinux.org/packages/drawpile).
+- **Original image stays sacred.** AI operations should create new layers, masks, maps, and candidate groups instead of destructively changing the source.
+- **AI output is material.** A background removal produces a cutout and matte. A depth pass produces a visible guide layer. An inpaint produces candidate patch layers. A scene separation pass produces editable regions.
+- **Layers replace nodes.** Internally, operations may use complex model chains. The user should still work with familiar art-tool concepts: selections, masks, layers, regions, prompts, seeds, CFG, denoise, and candidates.
+- **Scene decomposition matters.** Underpaint's "magic layers" idea is not about finding fonts or design assets. It is about separating the image into meaningful visual regions and repairing what sits behind them.
+- **Outpaint is intentional.** Expanding a canvas should create space, not automatically invent pixels. Outpaint should be a user-initiated generative fill operation.
+- **Collaboration stays strategic.** Drawpile's collaborative substrate may become useful for shared restoration sessions, cloud rendering workers, agent participants, provenance, and review workflows.
+- **Small, high-quality models are preferred.** The local target is RTX 4070-class hardware, so model choice, tiling, crop size, model swapping, and VRAM scheduling are core design concerns.
 
-## Getting Help, Giving Suggestions, Reporting Bugs
+## Current Direction
 
-If you're having trouble with something, want to suggest a feature or report a bug, take a look at [the help page on drawpile.net](https://drawpile.net/help/).
+The current product thesis is:
 
-You can directly [report issues here on GitHub](https://github.com/drawpile/Drawpile/issues). If you got Discord, you can [join the Drawpile server](https://drawpile.net/discord/) on there. You can also [use the chatroom on libera.chat](https://drawpile.net/irc/), it can be done directly through the browser and doesn't need any account.
+```text
+Photoshop-level accessibility
++ ComfyUI-level power
++ layers and masks instead of node graphs
+```
 
-## Contributing
+Planned AI capabilities include:
 
-Pull requests are welcome, be it for code or anything else! If you want to contribute documentation, you can do so [over in this repository](https://github.com/drawpile/drawpile.github.io).
+- scene/layer separation
+- generative fill
+- intentional outpaint
+- background removal and matting
+- detail-enhancing upscaling
+- depth, normal, pose, edge, and segmentation guide layers
+- face restoration with explicit identity-drift warnings
+- model management and VRAM-aware scheduling
+- optional cloud rendering/storage providers
+- future MCP/agent control through scoped, undoable domain operations
 
-If you want to translate Drawpile to your language, take a look at [Drawpile on Weblate](https://hosted.weblate.org/engage/drawpile/). You can translate it directly in the browser.
+## Project Docs
 
-[![translation status](https://hosted.weblate.org/widgets/drawpile/-/287x66-grey.png)](https://hosted.weblate.org/engage/drawpile/)
+Underpaint planning docs live in `docs/`:
 
-## Client Dependencies
+- [Underpaint Thesis](docs/underpaint-thesis.md)
+- [Project Plan](docs/project-plan.md)
+- [Architecture](docs/architecture.md)
+- [Layer Separation And Generative Fill](docs/layer-separation-and-generative-fill.md)
+- [Model Research](docs/model-research.md)
+- [Build Baseline](docs/build-baseline.md)
+- [Rebrand Plan](docs/rebrand-plan.md)
 
-The Drawpile client uses the following shared libraries:
+Inherited Drawpile docs are kept under `docs/drawpile/`.
 
-* Qt (all platforms)
-* OpenSSL (all platforms)
-* KDE Framework Archive (Windows, Linux AppImage, Android)
-* libzip (macOS, Linux Flatpak)
+## Build Status
 
-On Windows, these libraries are signed along with the executable using free code signing provided by [SignPath.io](https://about.signpath.io/) and a  certificate by [SignPath Foundation](https://signpath.org/). See [the code signing policy on drawpile.net](https://drawpile.net/codesigningpolicy/) for details.
+The fork currently has verified Qt5 Linux baselines for:
 
-The dependencies are pinned to known good versions and the source code for is verified against the hashes and signatures provided in their releases from upstream. SHA384 hash checks are also done for each build to ensure integrity of the source code retrieved from upstream.
+- headless server
+- desktop client
 
-We make some patches to these dependencies when building the application, which you can find in [.github/scripts/patches](.github/scripts/patches). Each patch file contains a description as to what it does.
+See [docs/build-baseline.md](docs/build-baseline.md) for exact configure/build commands and package notes.
 
-You can find build processes, versions, the upstream source URLs and hashes [for Qt and OpenSSL here](.github/scripts/build-qt.cmake) and [for KDE Framework Archive and libzip here](.github/scripts/build-other.cmake).
+The latest verified client smoke check was:
+
+```bash
+./build-qt5-client-baseline/bin/drawpile --version
+./build-qt5-client-baseline/bin/drawpile --help
+```
+
+Qt6 is deferred until there is a concrete product or packaging reason to prioritize it.
+
+## Upstream Drawpile
+
+Underpaint is derived from Drawpile, a collaborative drawing program that lets people draw, paint, and animate together on the same canvas. Drawpile runs on Windows, Linux, macOS, and Android.
+
+Original upstream:
+
+- Drawpile repository: <https://github.com/drawpile/Drawpile>
+- Drawpile website: <https://drawpile.net/>
+- Drawpile build docs: <https://docs.drawpile.net/help/development/buildingfromsource>
+
+This fork keeps Drawpile provenance visible while exploring a different product direction.
+
+## License
+
+Underpaint is based on Drawpile and remains under GPLv3. See [LICENSE.txt](LICENSE.txt).
+
+Model weights and AI providers have their own licenses. Underpaint tracks model license and commercial-use status as a first-class model-manager concern.
+
