@@ -97,14 +97,14 @@ specific Underpaint replacement and a rollback path.
 
 ## First Safe Code Slice
 
-The next code change should be small:
+Completed in the first public identity pass:
 
 1. Change the desktop application display name to `Underpaint`.
 2. Update the English public metadata summary to describe Underpaint.
-3. Leave binary names, settings namespace, package IDs, file formats, URL
-   schemes, server names, and Drawpile provenance untouched.
-4. Build the Qt5 desktop client again and smoke-test `--version` and `--help`.
+3. Update the English desktop entry name and generic name.
+4. Leave binary names, settings namespace, package IDs, file formats, URL
+   schemes, server names, icons, and Drawpile provenance untouched.
+5. Build the Qt5 desktop client again and smoke-test `--version` and `--help`.
 
 That gives the fork a visible identity without pretending the inherited
 substrate has already been fully renamed.
-

@@ -1,5 +1,5 @@
-Drawpile is a collaborative drawing program that lets multiple people draw, sketch, paint and animate on the same canvas simultaneously.
+Underpaint is an experimental AI photo restoration and image reconstruction workspace built from Drawpile.
 
-The Android version works on both tablets and phones. The program is built for use primarily with a pressure-sensitive pen, but drawing via touch is also possible.
+The fork keeps Drawpile's collaborative editing foundation while exploring artist-directed restoration workflows, including layered masks, intentional generative fill, outpaint operations, model management, and inspectable AI results.
 
-If you have any questions, need help with anything or can't manage to get the application working, check out the help page on drawpile.net on how to get in contact!
+Underpaint is early-stage GPLv3 software. Drawpile provenance and inherited compatibility surfaces remain visible while the fork develops its own restoration-focused product identity.

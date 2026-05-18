@@ -1,7 +1,7 @@
 [Desktop Entry]
 Version=1.0
-Name=Drawpile
-GenericName=Collaborative Drawing Program
+Name=Underpaint
+GenericName=AI Photo Restoration Workspace
 GenericName[fi]=Monen käyttäjän piirto-ohjelma
 GenericName[uk]=Програма для спільного малювання
 Exec=drawpile %u

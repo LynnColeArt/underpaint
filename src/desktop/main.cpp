@@ -96,7 +96,7 @@ DrawpileApp::DrawpileApp(int &argc, char **argv)
 	setOrganizationDomain("drawpile.net");
 	setApplicationName("drawpile");
 	setApplicationVersion(cmake_config::version());
-	setApplicationDisplayName("Drawpile");
+	setApplicationDisplayName("Underpaint");
 	setWindowIcon(QIcon(":/icons/drawpile.png"));
 	// QSettings has trouble loading types enums if they haven't been
 	// instantiated before, so we just instantiate every default value once to
