@@ -2,9 +2,11 @@
 #include "desktop/ai/aijobrunner.h"
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonParseError>
 #include <QProcess>
+#include <QProcessEnvironment>
 #include <QSaveFile>
 #include <QTemporaryDir>
 
@@ -49,10 +51,45 @@ QJsonDocument readJsonFile(const QString &path, QString &outError)
 	return document;
 }
 
+void processProgressLines(
+	QByteArray &buffer, const QByteArray &chunk,
+	const JobRunner::ProgressCallback &progressCallback)
+{
+	if(!progressCallback || chunk.isEmpty()) {
+		buffer += chunk;
+		return;
+	}
+
+	buffer += chunk;
+	int lineEnd = buffer.indexOf('\n');
+	while(lineEnd >= 0) {
+		const QByteArray line = buffer.left(lineEnd).trimmed();
+		buffer.remove(0, lineEnd + 1);
+		if(line.startsWith('{')) {
+			QJsonParseError parseError;
+			const QJsonDocument document = QJsonDocument::fromJson(line, &parseError);
+			if(parseError.error == QJsonParseError::NoError && document.isObject()) {
+				const QJsonObject object = document.object();
+				if(object.contains(QStringLiteral("type"))) {
+					progressCallback(object);
+				}
+			}
+		}
+		lineEnd = buffer.indexOf('\n');
+	}
+}
+
 }
 
 QString JobRunner::defaultWorkerPath()
 {
+	const QString configuredWorker =
+		QProcessEnvironment::systemEnvironment().value(
+			QStringLiteral("UNDERPAINT_AI_WORKER"));
+	if(!configuredWorker.isEmpty()) {
+		return configuredWorker;
+	}
+
 	QString executable = QStringLiteral("underpaint-ai-worker-stub");
 #ifdef Q_OS_WIN
 	executable += QStringLiteral(".exe");
@@ -61,7 +98,8 @@ QString JobRunner::defaultWorkerPath()
 }
 
 JobRunResult JobRunner::run(
-	const JobRequest &request, const QString &workerPath, int timeoutMsec)
+	const JobRequest &request, const QString &workerPath, int timeoutMsec,
+	const ProgressCallback &progressCallback)
 {
 	JobRunResult result;
 
@@ -87,6 +125,7 @@ JobRunResult JobRunner::run(
 
 	const QString resolvedWorkerPath =
 		workerPath.isEmpty() ? defaultWorkerPath() : workerPath;
+	result.resolvedWorkerPath = resolvedWorkerPath;
 	QProcess process;
 	process.setProgram(resolvedWorkerPath);
 	process.setArguments(
@@ -98,19 +137,40 @@ JobRunResult JobRunner::run(
 								  .arg(process.errorString());
 		return result;
 	}
-	if(!process.waitForFinished(timeoutMsec)) {
+
+	QElapsedTimer timer;
+	timer.start();
+	QByteArray standardOutputBuffer;
+	bool timedOut = false;
+	while(!process.waitForFinished(100)) {
+		const QByteArray stdoutChunk = process.readAllStandardOutput();
+		result.standardOutput += stdoutChunk;
+		processProgressLines(
+			standardOutputBuffer, stdoutChunk, progressCallback);
+		result.standardError += process.readAllStandardError();
+		if(timeoutMsec >= 0 && timer.elapsed() >= timeoutMsec) {
+			timedOut = true;
+			break;
+		}
+	}
+	if(timedOut) {
 		process.kill();
 		process.waitForFinished(3000);
 		result.errorMessage =
 			QStringLiteral("AI worker timed out after %1 ms.").arg(timeoutMsec);
-		result.standardOutput = process.readAllStandardOutput();
-		result.standardError = process.readAllStandardError();
+		const QByteArray stdoutChunk = process.readAllStandardOutput();
+		result.standardOutput += stdoutChunk;
+		processProgressLines(
+			standardOutputBuffer, stdoutChunk, progressCallback);
+		result.standardError += process.readAllStandardError();
 		return result;
 	}
 
 	result.exitCode = process.exitCode();
-	result.standardOutput = process.readAllStandardOutput();
-	result.standardError = process.readAllStandardError();
+	const QByteArray stdoutChunk = process.readAllStandardOutput();
+	result.standardOutput += stdoutChunk;
+	processProgressLines(standardOutputBuffer, stdoutChunk, progressCallback);
+	result.standardError += process.readAllStandardError();
 
 	if(QFile::exists(result.responsePath)) {
 		QJsonDocument responseDocument = readJsonFile(result.responsePath, error);

@@ -10,7 +10,7 @@ namespace ai {
 
 enum class Operation {
 	SceneSeparation,
-	GenerativeFill,
+	Inpaint,
 	Outpaint,
 	BackgroundRemoval,
 	Upscale,
@@ -59,7 +59,7 @@ struct JobCandidate {
 
 struct JobRequest {
 	QString id;
-	Operation operation = Operation::GenerativeFill;
+	Operation operation = Operation::Inpaint;
 	QVector<JobAsset> inputs;
 	QJsonObject region;
 	QJsonObject parameters;

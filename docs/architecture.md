@@ -42,7 +42,7 @@ source artifact(s)
 
 Examples:
 
-- Generative Fill: source visible image + active selection + prompt/settings = candidate patch layers.
+- Inpaint: source visible image + active selection + prompt/settings = candidate patch layers.
 - Outpaint: expanded canvas + transparent/edge mask + prompt/settings = candidate outpaint layers.
 - Scene Repair: separated-object mask + source image + context = candidate background repair layers.
 - Depth Map: source visible image = grayscale guide layer.
@@ -56,7 +56,7 @@ Minimum request fields:
 
 ```yaml
 job_id: uuid
-operation: generative_fill
+operation: inpaint
 source:
   project_id: string
   image_path: path
@@ -111,7 +111,7 @@ Generated outputs should land in a structured layer group rather than replacing 
 Example:
 
 ```text
-Generative Fill - continue lake behind rock
+Inpaint - continue lake behind rock
   Candidate 1 [visible]
   Candidate 2
   Candidate 3
@@ -180,7 +180,7 @@ It should track:
 Users should mostly see capabilities:
 
 - Separate Image
-- Generative Fill
+- Inpaint
 - Outpaint
 - Background Remove
 - Detail Enhance

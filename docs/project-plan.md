@@ -77,6 +77,9 @@ Acceptance criteria:
 
 Goal: add the first end-to-end AI operation path without committing to final model choices.
 
+Status: initial Inpaint path exports a source crop and mask, runs the
+local worker stub out of process, and imports placeholder candidates as layers.
+
 Operation shape:
 
 ```text
@@ -98,18 +101,18 @@ Acceptance criteria:
 
 - The job schema is documented and available to C++ editor code.
 - The editor has a native runner for request/response worker execution.
-- Generative Fill can run a placeholder worker job from the desktop menu.
+- Inpaint can run a placeholder worker job from the desktop menu.
 - The app can submit a selected region to a worker and receive a new candidate layer.
 - The worker can crash or fail without crashing the app.
 - The result is undoable or removable through normal layer behavior.
 
 ## Milestone 4: Generative Region Operations
 
-Goal: implement Photoshop-like generative fill and intentional outpaint UX.
+Goal: implement approachable inpaint and intentional outpaint UX.
 
 Tasks:
 
-- Add a Generative Fill panel for active selections.
+- Add a Inpaint panel for active selections.
 - Add prompt, seed, CFG, denoise, quality preset, context padding, and variation count.
 - Generate multiple candidates as a layer group.
 - Add rerun-with-same-settings and rerun-with-new-seed.
@@ -157,7 +160,7 @@ Tasks:
 
 Acceptance criteria:
 
-- Generative fill, outpaint, and scene repair use global defaults.
+- Inpaint, outpaint, and scene repair use global defaults.
 - Operation panels can override defaults.
 - Cloud jobs require explicit user permission.
 
@@ -194,7 +197,7 @@ Initial candidate capabilities:
 - depth map
 - detail upscale
 - face restoration
-- XL-class generative fill/outpaint
+- XL-class inpaint/outpaint
 
 Acceptance criteria:
 
@@ -210,7 +213,7 @@ Tasks:
 
 - Add "Create Guide Layer" operations.
 - Support depth, normal, pose, edge, and segmentation guide layers.
-- Let generative fill/outpaint use guide layers.
+- Let inpaint/outpaint use guide layers.
 - Add provenance for guide usage.
 
 Acceptance criteria:

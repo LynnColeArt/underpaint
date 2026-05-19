@@ -88,6 +88,7 @@ extern "C" {
 #include "libclient/document.h"
 #include "libclient/drawdance/eventlog.h"
 #include "libclient/drawdance/perf.h"
+#include "libclient/drawdance/viewmode.h"
 #include "libclient/export/animationsaverrunnable.h"
 #include "libclient/import/canvasloaderrunnable.h"
 #include "libclient/import/loadresult.h"
@@ -109,41 +110,63 @@ extern "C" {
 #include "libshared/util/whatismyip.h"
 #include <QActionGroup>
 #include <QApplication>
+#include <QAbstractItemView>
 #include <QCloseEvent>
 #include <QDesktopServices>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QDir>
+#include <QDoubleSpinBox>
+#include <QEasingCurve>
 #include <QFile>
+#include <QFormLayout>
 #include <QIcon>
 #include <QImageReader>
 #include <QImageWriter>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
+#include <QListView>
+#include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMimeData>
+#include <QPainter>
 #include <QPointer>
 #include <QProgressDialog>
+#include <QProcess>
+#include <QProcessEnvironment>
 #include <QPushButton>
+#include <QPixmap>
 #include <QScopedValueRollback>
 #include <QScreen>
 #include <QSettings>
 #include <QShortcutEvent>
 #include <QSignalBlocker>
+#include <QSlider>
 #include <QSplitter>
+#include <QSpinBox>
 #include <QStatusBar>
 #include <QStyle>
 #include <QTabBar>
+#include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QTextEdit>
+#include <QThread>
 #include <QThreadPool>
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
 #include <QUrl>
+#include <QVariantAnimation>
 #include <QVBoxLayout>
 #include <QWindow>
+#include <climits>
 #include <functional>
 #ifdef DRAWPILE_PROJECT_DIALOG
 #	include "desktop/dialogs/projectdialog.h"
@@ -4589,6 +4612,611 @@ void MainWindow::triggerUpdateLockStateOnSelectionChange()
 }
 
 namespace {
+struct InpaintOptions {
+	QString prompt;
+	QString negativePrompt;
+	int seed = -1;
+	double cfg = 5.0;
+	double denoise = 0.75;
+	int steps = 20;
+	int candidateCount = 3;
+	int edgeFeatherPx = 24;
+};
+
+struct PhotoDecompositionOptions {
+	int maxRegions = 5;
+	int minRegionAreaPct = 3;
+};
+
+class AiPreviewLabel final : public QLabel {
+public:
+	explicit AiPreviewLabel(QWidget *parent = nullptr)
+		: QLabel(parent)
+	{
+		setAlignment(Qt::AlignCenter);
+	}
+
+	void setPreviewPixmap(const QPixmap &pixmap)
+	{
+		if(pixmap.isNull()) {
+			return;
+		}
+
+		if(m_currentPixmap.isNull()) {
+			m_currentPixmap = pixmap;
+			m_blend = 1.0;
+			updateGeometry();
+			update();
+			return;
+		}
+
+		m_previousPixmap = m_currentPixmap;
+		m_currentPixmap = pixmap;
+		m_blend = 0.0;
+		if(m_animation) {
+			m_animation->stop();
+			m_animation->deleteLater();
+		}
+
+		m_animation = new QVariantAnimation(this);
+		m_animation->setDuration(220);
+		m_animation->setStartValue(0.0);
+		m_animation->setEndValue(1.0);
+		m_animation->setEasingCurve(QEasingCurve::InOutQuad);
+		connect(
+			m_animation, &QVariantAnimation::valueChanged, this,
+			[this](const QVariant &value) {
+				m_blend = value.toDouble();
+				update();
+			});
+		connect(
+			m_animation, &QVariantAnimation::finished, this, [this] {
+				m_previousPixmap = QPixmap();
+				m_blend = 1.0;
+				m_animation->deleteLater();
+				m_animation = nullptr;
+				update();
+			});
+		m_animation->start();
+		updateGeometry();
+		update();
+	}
+
+protected:
+	void paintEvent(QPaintEvent *event) override
+	{
+		if(m_currentPixmap.isNull()) {
+			QLabel::paintEvent(event);
+			return;
+		}
+
+		QPainter painter(this);
+		drawCenteredPixmap(painter, m_previousPixmap, 1.0 - m_blend);
+		drawCenteredPixmap(painter, m_currentPixmap, m_blend);
+	}
+
+	QSize sizeHint() const override
+	{
+		return m_currentPixmap.isNull()
+				   ? QLabel::sizeHint()
+				   : m_currentPixmap.size().boundedTo(QSize(280, 210));
+	}
+
+private:
+	void drawCenteredPixmap(QPainter &painter, const QPixmap &pixmap, qreal opacity)
+	{
+		if(pixmap.isNull() || opacity <= 0.0) {
+			return;
+		}
+
+		const QSize targetSize = pixmap.size().scaled(
+			contentsRect().size(), Qt::KeepAspectRatio);
+		const QRect targetRect(
+			QPoint(
+				contentsRect().center().x() - targetSize.width() / 2,
+				contentsRect().center().y() - targetSize.height() / 2),
+			targetSize);
+		painter.setOpacity(opacity);
+		painter.drawPixmap(targetRect, pixmap);
+		painter.setOpacity(1.0);
+	}
+
+	QPixmap m_previousPixmap;
+	QPixmap m_currentPixmap;
+	qreal m_blend = 1.0;
+	QVariantAnimation *m_animation = nullptr;
+};
+
+QWidget *makeIntSlider(
+	QWidget *parent, int min, int max, int value,
+	const std::function<QString(int)> &format, QSlider *&outSlider)
+{
+	QWidget *widget = new QWidget(parent);
+	QHBoxLayout *layout = new QHBoxLayout(widget);
+	layout->setContentsMargins(0, 0, 0, 0);
+	outSlider = new QSlider(Qt::Horizontal, widget);
+	outSlider->setRange(min, max);
+	outSlider->setValue(qBound(min, value, max));
+	QLabel *valueLabel = new QLabel(format(outSlider->value()), widget);
+	valueLabel->setMinimumWidth(54);
+	valueLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+	QObject::connect(outSlider, &QSlider::valueChanged, valueLabel, [=](int v) {
+		valueLabel->setText(format(v));
+	});
+	layout->addWidget(outSlider, 1);
+	layout->addWidget(valueLabel);
+	return widget;
+}
+
+QImage selectionMaskToInpaintMask(
+	const QImage &selectionMask, const QRect &selectionBounds,
+	const QRect &exportRegion)
+{
+	QImage inpaintMask(exportRegion.size(), QImage::Format_Grayscale8);
+	inpaintMask.fill(0);
+	const QPoint offset = selectionBounds.topLeft() - exportRegion.topLeft();
+	const QRect targetRect(offset, selectionMask.size());
+	const QRect clippedTarget = targetRect.intersected(inpaintMask.rect());
+	for(int y = clippedTarget.top(); y <= clippedTarget.bottom(); ++y) {
+		uchar *out = inpaintMask.scanLine(y);
+		const int sourceY = y - offset.y();
+		for(int x = clippedTarget.left(); x <= clippedTarget.right(); ++x) {
+			out[x] = uchar(qAlpha(selectionMask.pixel(x - offset.x(), sourceY)));
+		}
+	}
+	return inpaintMask;
+}
+
+QString underpaintToolPath(const QString &relativePath)
+{
+	const QString envPath = QProcessEnvironment::systemEnvironment().value(
+		QStringLiteral("UNDERPAINT_TOOL_ROOT"));
+	if(!envPath.isEmpty()) {
+		const QString path = QDir(envPath).filePath(relativePath);
+		if(QFile::exists(path)) {
+			return path;
+		}
+	}
+
+	const QString currentPath = QDir::current().filePath(relativePath);
+	if(QFile::exists(currentPath)) {
+		return currentPath;
+	}
+
+	const QString appPath =
+		QDir(QApplication::applicationDirPath()).filePath(
+			QStringLiteral("../../%1").arg(relativePath));
+	if(QFile::exists(appPath)) {
+		return appPath;
+	}
+
+	return currentPath;
+}
+
+QString underpaintPythonPath()
+{
+	const QString envPath = QProcessEnvironment::systemEnvironment().value(
+		QStringLiteral("UNDERPAINT_PYTHON"));
+	if(!envPath.isEmpty()) {
+		return envPath;
+	}
+
+	const QString venvPath =
+		underpaintToolPath(QStringLiteral(".venv/bin/python"));
+	if(QFile::exists(venvPath)) {
+		return venvPath;
+	}
+
+	return QStringLiteral("python3");
+}
+
+QString improveInpaintPromptWithHelper(
+	const QRect &region, const QString &prompt, const QString &negativePrompt,
+	int candidateCount, int seed, double cfg, double denoise, int steps,
+	int edgeFeatherPx, QString &outError)
+{
+	const QString scriptPath =
+		QProcessEnvironment::systemEnvironment().value(
+			QStringLiteral("UNDERPAINT_PROMPT_HELPER"),
+			underpaintToolPath(
+				QStringLiteral("tools/ai/underpaint-prompt-helper.py")));
+	if(!QFile::exists(scriptPath)) {
+		outError = MainWindow::tr("Prompt helper was not found: %1").arg(scriptPath);
+		return QString();
+	}
+
+	QJsonObject payload{
+		{QStringLiteral("operation"), QStringLiteral("inpaint-prompt-improve")},
+		{QStringLiteral("prompt"), prompt},
+		{QStringLiteral("negativePrompt"), negativePrompt},
+		{QStringLiteral("candidateCount"), candidateCount},
+		{QStringLiteral("seed"), seed},
+		{QStringLiteral("cfg"), cfg},
+		{QStringLiteral("denoise"), denoise},
+		{QStringLiteral("steps"), steps},
+		{QStringLiteral("edgeFeatherPx"), edgeFeatherPx},
+		{QStringLiteral("selection"),
+		 QJsonObject{
+			 {QStringLiteral("width"), region.width()},
+			 {QStringLiteral("height"), region.height()},
+		 }},
+	};
+
+	QProcess process;
+	process.setProgram(underpaintPythonPath());
+	process.setArguments({scriptPath});
+	process.setProcessChannelMode(QProcess::SeparateChannels);
+	process.start();
+	if(!process.waitForStarted(3000)) {
+		outError = process.errorString();
+		return QString();
+	}
+	process.write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+	process.closeWriteChannel();
+	if(!process.waitForFinished(15000)) {
+		process.kill();
+		process.waitForFinished(1000);
+		outError = MainWindow::tr("Prompt helper timed out.");
+		return QString();
+	}
+
+	const QByteArray stderrBytes = process.readAllStandardError();
+	QJsonParseError parseError;
+	const QJsonDocument document = QJsonDocument::fromJson(
+		process.readAllStandardOutput(), &parseError);
+	if(process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+		outError = QString::fromUtf8(stderrBytes).trimmed();
+		if(outError.isEmpty()) {
+			outError = MainWindow::tr("Prompt helper exited with code %1.")
+						   .arg(process.exitCode());
+		}
+		return QString();
+	}
+	if(parseError.error != QJsonParseError::NoError || !document.isObject()) {
+		outError = MainWindow::tr("Prompt helper returned invalid JSON.");
+		return QString();
+	}
+
+	const QJsonObject response = document.object();
+	if(!response.value(QStringLiteral("ok")).toBool()) {
+		outError = response.value(QStringLiteral("error"))
+					   .toString(MainWindow::tr("Prompt helper failed."));
+		return QString();
+	}
+	const QString improved =
+		response.value(QStringLiteral("prompt")).toString().trimmed();
+	if(improved.isEmpty()) {
+		outError = MainWindow::tr("Prompt helper returned an empty prompt.");
+		return QString();
+	}
+	return improved;
+}
+
+bool showInpaintOptionsDialog(
+	QWidget *parent, const QRect &region, InpaintOptions &options)
+{
+	QDialog dialog(parent);
+	dialog.setWindowTitle(MainWindow::tr("Inpaint"));
+
+	QVBoxLayout *layout = new QVBoxLayout(&dialog);
+	QLabel *regionLabel = new QLabel(
+		MainWindow::tr("Selection: %1 x %2 px")
+			.arg(region.width())
+			.arg(region.height()),
+		&dialog);
+	layout->addWidget(regionLabel);
+
+	QTextEdit *prompt = new QTextEdit(&dialog);
+	prompt->setAcceptRichText(false);
+	prompt->setPlainText(options.prompt);
+	prompt->setPlaceholderText(
+		MainWindow::tr("Describe what should appear in the selected area"));
+	prompt->setMinimumHeight(90);
+
+	QLineEdit *negativePrompt = new QLineEdit(options.negativePrompt, &dialog);
+	negativePrompt->setPlaceholderText(
+		MainWindow::tr("Things to avoid, optional"));
+
+	QSpinBox *seed = new QSpinBox(&dialog);
+	seed->setRange(-1, INT_MAX);
+	seed->setValue(options.seed);
+	seed->setSpecialValueText(MainWindow::tr("Random"));
+
+	QSlider *candidateCount = nullptr;
+	QWidget *candidateCountSlider = makeIntSlider(
+		&dialog, 1, 4, options.candidateCount,
+		[](int v) { return QString::number(v); }, candidateCount);
+	QSlider *cfg = nullptr;
+	QWidget *cfgSlider = makeIntSlider(
+		&dialog, 10, 150, int(options.cfg * 10.0),
+		[](int v) { return QString::number(v / 10.0, 'f', 1); }, cfg);
+	QSlider *denoise = nullptr;
+	QWidget *denoiseSlider = makeIntSlider(
+		&dialog, 5, 100, int(options.denoise * 100.0),
+		[](int v) { return QString::number(v / 100.0, 'f', 2); }, denoise);
+	QSlider *steps = nullptr;
+	QWidget *stepsSlider = makeIntSlider(
+		&dialog, 1, 60, options.steps,
+		[](int v) { return QString::number(v); }, steps);
+	QSlider *edgeFeather = nullptr;
+	QWidget *edgeFeatherSlider = makeIntSlider(
+		&dialog, 0, 128, options.edgeFeatherPx,
+		[](int v) { return MainWindow::tr("%1 px").arg(v); }, edgeFeather);
+
+	QWidget *promptWidget = new QWidget(&dialog);
+	QHBoxLayout *promptLayout = new QHBoxLayout(promptWidget);
+	promptLayout->setContentsMargins(0, 0, 0, 0);
+	promptLayout->setSpacing(4);
+	promptLayout->addWidget(prompt, 1);
+	QToolButton *promptHelper = new QToolButton(promptWidget);
+	promptHelper->setIcon(QIcon::fromTheme(QStringLiteral("document-edit")));
+	promptHelper->setToolTip(
+		MainWindow::tr("Rewrite prompt with the local prompt helper"));
+	promptHelper->setAutoRaise(true);
+	promptHelper->setFocusPolicy(Qt::NoFocus);
+	promptLayout->addWidget(promptHelper, 0, Qt::AlignTop);
+	QWidget *dialogParent = &dialog;
+	QObject::connect(
+		promptHelper, &QToolButton::clicked, &dialog,
+		[dialogParent, promptHelper, prompt, negativePrompt, candidateCount,
+		 seed, cfg, denoise, steps, edgeFeather, &region] {
+			QString error;
+			promptHelper->setEnabled(false);
+			utils::ScopedOverrideCursor cursor;
+			const QString improved = improveInpaintPromptWithHelper(
+				region, prompt->toPlainText().trimmed(),
+				negativePrompt->text().trimmed(), candidateCount->value(),
+				seed->value(), cfg->value() / 10.0, denoise->value() / 100.0,
+				steps->value(), edgeFeather->value(), error);
+			promptHelper->setEnabled(true);
+			if(improved.isEmpty()) {
+				QMessageBox::warning(
+					dialogParent, MainWindow::tr("Prompt Helper"), error);
+				return;
+			}
+			prompt->setPlainText(improved);
+			prompt->setFocus();
+		});
+
+	QFormLayout *form = new QFormLayout;
+	form->addRow(MainWindow::tr("Prompt"), promptWidget);
+	form->addRow(MainWindow::tr("Negative prompt"), negativePrompt);
+	form->addRow(MainWindow::tr("Candidates"), candidateCountSlider);
+	form->addRow(MainWindow::tr("Seed"), seed);
+	form->addRow(MainWindow::tr("CFG"), cfgSlider);
+	form->addRow(MainWindow::tr("Denoise"), denoiseSlider);
+	form->addRow(MainWindow::tr("Steps"), stepsSlider);
+	form->addRow(MainWindow::tr("Edge feather"), edgeFeatherSlider);
+	layout->addLayout(form);
+
+	QDialogButtonBox *buttons = new QDialogButtonBox(
+		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	buttons->button(QDialogButtonBox::Ok)->setText(
+		MainWindow::tr("Generate"));
+	QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+	layout->addWidget(buttons);
+
+	if(dialog.exec() != QDialog::Accepted) {
+		return false;
+	}
+
+	options.prompt = prompt->toPlainText().trimmed();
+	options.negativePrompt = negativePrompt->text().trimmed();
+	options.candidateCount = candidateCount->value();
+	options.seed = seed->value();
+	options.cfg = cfg->value() / 10.0;
+	options.denoise = denoise->value() / 100.0;
+	options.steps = steps->value();
+	options.edgeFeatherPx = edgeFeather->value();
+	return true;
+}
+
+bool showPhotoDecompositionOptionsDialog(
+	QWidget *parent, const QSize &canvasSize, PhotoDecompositionOptions &options)
+{
+	QDialog dialog(parent);
+	dialog.setWindowTitle(MainWindow::tr("Photo Decomposition"));
+
+	QVBoxLayout *layout = new QVBoxLayout(&dialog);
+	QLabel *sourceLabel = new QLabel(
+		MainWindow::tr("Source: %1 x %2 px")
+			.arg(canvasSize.width())
+			.arg(canvasSize.height()),
+		&dialog);
+	layout->addWidget(sourceLabel);
+
+	QSlider *maxRegions = nullptr;
+	QWidget *maxRegionsSlider = makeIntSlider(
+		&dialog, 2, 8, options.maxRegions,
+		[](int v) { return QString::number(v); }, maxRegions);
+	QSlider *minRegionArea = nullptr;
+	QWidget *minRegionAreaSlider = makeIntSlider(
+		&dialog, 1, 20, options.minRegionAreaPct,
+		[](int v) { return MainWindow::tr("%1%").arg(v); }, minRegionArea);
+
+	QFormLayout *form = new QFormLayout;
+	form->addRow(MainWindow::tr("Max regions"), maxRegionsSlider);
+	form->addRow(MainWindow::tr("Minimum region area"), minRegionAreaSlider);
+	layout->addLayout(form);
+
+	QDialogButtonBox *buttons = new QDialogButtonBox(
+		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	buttons->button(QDialogButtonBox::Ok)->setText(
+		MainWindow::tr("Decompose"));
+	QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+	layout->addWidget(buttons);
+
+	if(dialog.exec() != QDialog::Accepted) {
+		return false;
+	}
+
+	options.maxRegions = maxRegions->value();
+	options.minRegionAreaPct = minRegionArea->value();
+	return true;
+}
+
+void setCandidateLayerVisible(
+	canvas::CanvasModel *canvas, const QVector<int> &layerIds, int index)
+{
+	for(int i = 0; i < layerIds.size(); ++i) {
+		canvas->paintEngine()->setLayerVisibility(layerIds.at(i), i != index);
+	}
+}
+
+QString candidateSeedText(const ai::JobCandidate &candidate)
+{
+	const QJsonValue seed = candidate.metadata.value(QStringLiteral("seed"));
+	if(seed.isDouble()) {
+		const int seedValue = seed.toInt(-1);
+		if(seedValue >= 0) {
+			return QString::number(seedValue);
+		}
+	}
+	const QString seedString = seed.toString().trimmed();
+	return seedString == QStringLiteral("-1") ? QString() : seedString;
+}
+
+QString candidateDisplayLabel(const ai::JobCandidate &candidate)
+{
+	const QString label = candidate.label.isEmpty()
+							  ? MainWindow::tr("Candidate")
+							  : candidate.label;
+	const QString seed = candidateSeedText(candidate);
+	return seed.isEmpty()
+			   ? label
+			   : MainWindow::tr("%1 - Seed %2").arg(label, seed);
+}
+
+QString candidateLayerLabel(const ai::JobCandidate &candidate)
+{
+	const QString seed = candidateSeedText(candidate);
+	return seed.isEmpty()
+			   ? candidateDisplayLabel(candidate)
+			   : MainWindow::tr("Inpaint %1").arg(seed);
+}
+
+int validInpaintAnchorLayer(canvas::LayerListModel *layers, int preferredLayerId)
+{
+	if(!layers) {
+		return 0;
+	}
+	if(preferredLayerId > 0 && layers->layerIndex(preferredLayerId).isValid()) {
+		return preferredLayerId;
+	}
+	const int defaultLayerId = layers->defaultLayer();
+	if(defaultLayerId > 0 && layers->layerIndex(defaultLayerId).isValid()) {
+		return defaultLayerId;
+	}
+	for(const canvas::LayerListItem &item : layers->layerItems()) {
+		if(!item.group) {
+			return item.id;
+		}
+	}
+	return 0;
+}
+
+QString candidateDetailsText(
+	const ai::JobRunResult &jobResult, const QString &prefix = QString())
+{
+	const QJsonObject diagnostics = jobResult.response.diagnostics;
+	const QJsonObject provenance = jobResult.response.provenance;
+	QString details = prefix;
+	if(!details.isEmpty()) {
+		details += QStringLiteral("\n");
+	}
+	details += MainWindow::tr("Worker: %1").arg(jobResult.resolvedWorkerPath);
+	details += MainWindow::tr("\nBackend: %1")
+				   .arg(provenance.value(QStringLiteral("backend"))
+							.toString(MainWindow::tr("unknown")));
+	const QString model = provenance.value(QStringLiteral("model")).toString();
+	if(!model.isEmpty()) {
+		details += MainWindow::tr("\nModel: %1").arg(model);
+	}
+	const QString device = diagnostics.value(QStringLiteral("device")).toString();
+	if(!device.isEmpty()) {
+		details += MainWindow::tr("\nDevice: %1").arg(device);
+	}
+	if(diagnostics.contains(QStringLiteral("elapsedMsec"))) {
+		details += MainWindow::tr("\nElapsed: %1 ms")
+					   .arg(diagnostics.value(QStringLiteral("elapsedMsec")).toInt());
+	}
+	if(diagnostics.contains(QStringLiteral("peakVramMb"))) {
+		details += MainWindow::tr("\nPeak VRAM: %1 MB")
+					   .arg(diagnostics.value(QStringLiteral("peakVramMb")).toInt());
+	}
+	if(!jobResult.response.message.isEmpty()) {
+		details += MainWindow::tr("\nMessage: %1").arg(jobResult.response.message);
+	}
+	details += MainWindow::tr("\nJob directory: %1")
+				   .arg(jobResult.jobDirectoryPath);
+	for(const ai::JobCandidate &candidate : jobResult.response.candidates) {
+		details += MainWindow::tr("\n%1 image: %2")
+					   .arg(candidateDisplayLabel(candidate), candidate.imagePath);
+	}
+	return details;
+}
+
+bool showInpaintCandidateDialog(
+	QWidget *parent, canvas::CanvasModel *canvas,
+	const QVector<int> &importedLayerIds, const ai::JobRunResult &jobResult)
+{
+	QDialog dialog(parent);
+	dialog.setWindowTitle(MainWindow::tr("Inpaint Candidates"));
+	dialog.resize(760, 520);
+
+	QVBoxLayout *layout = new QVBoxLayout(&dialog);
+	QLabel *title = new QLabel(
+		MainWindow::tr("Choose the candidate to show on the canvas."), &dialog);
+	layout->addWidget(title);
+
+	QListWidget *list = new QListWidget(&dialog);
+	list->setViewMode(QListView::IconMode);
+	list->setResizeMode(QListView::Adjust);
+	list->setMovement(QListView::Static);
+	list->setSelectionMode(QAbstractItemView::SingleSelection);
+	list->setIconSize(QSize(180, 140));
+	list->setSpacing(8);
+
+	for(int i = 0; i < jobResult.response.candidates.size(); ++i) {
+		const ai::JobCandidate &candidate = jobResult.response.candidates.at(i);
+		QPixmap preview(candidate.imagePath);
+		QListWidgetItem *item = new QListWidgetItem(
+			QIcon(preview.scaled(
+				list->iconSize(), Qt::KeepAspectRatio, Qt::SmoothTransformation)),
+			candidateDisplayLabel(candidate));
+		item->setToolTip(candidate.imagePath);
+		item->setData(Qt::UserRole, i);
+		list->addItem(item);
+	}
+	layout->addWidget(list, 1);
+
+	QLabel *details = new QLabel(
+		candidateDetailsText(jobResult, MainWindow::tr("Click a candidate to preview it.")),
+		&dialog);
+	details->setTextInteractionFlags(Qt::TextSelectableByMouse);
+	details->setWordWrap(true);
+	layout->addWidget(details);
+
+	QDialogButtonBox *buttons = new QDialogButtonBox(
+		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	buttons->button(QDialogButtonBox::Ok)->setText(MainWindow::tr("Use Candidate"));
+	QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+	layout->addWidget(buttons);
+
+	QObject::connect(
+		list, &QListWidget::currentRowChanged, &dialog,
+		[canvas, importedLayerIds](int row) {
+			if(row >= 0 && row < importedLayerIds.size()) {
+				setCandidateLayerVisible(canvas, importedLayerIds, row);
+			}
+		});
+	list->setCurrentRow(0);
+	return dialog.exec() == QDialog::Accepted;
+}
+
 struct ReasonSetter {
 	using Reason = view::Lock::Reason;
 	QFlags<Reason> allReasons = Reason::None;
@@ -7556,12 +8184,12 @@ void MainWindow::setupActions()
 	// AI menu
 	//
 	QAction *aiSceneSeparation =
-		makeAction("ai-scene-separation", tr("Scene &Separation..."))
+		makeAction("ai-scene-separation", tr("Photo &Decomposition..."))
 			.statusTip(tr("Separate the image into mask-backed layers"))
 			.noDefaultShortcut();
-	QAction *aiGenerativeFill =
-		makeAction("ai-generative-fill", tr("&Generative Fill..."))
-			.statusTip(tr("Fill the current selection with generated variants"))
+	QAction *aiInpaint =
+		makeAction("ai-inpaint", tr("&Inpaint Selection..."))
+			.statusTip(tr("Inpaint the current selection with generated variants"))
 			.noDefaultShortcut();
 	QAction *aiOutpaint =
 		makeAction("ai-outpaint", tr("&Outpaint..."))
@@ -7581,22 +8209,369 @@ void MainWindow::setupActions()
 			QMessageBox::information(this, title, message);
 		};
 	connect(aiSceneSeparation, &QAction::triggered, this, [=] {
-		showAiPlaceholder(
-			tr("Scene Separation"),
-			tr("Scene separation will create mask-backed layers for "
-			   "classifiable image regions, then prepare repair candidates "
-			   "behind separated objects."));
-	});
-	connect(aiGenerativeFill, &QAction::triggered, this, [=] {
+		canvas::CanvasModel *canvas = m_doc->canvas();
+		if(!canvas) {
+			showErrorMessage(tr("No canvas is available for photo decomposition."));
+			return;
+		}
+		if(!m_doc->checkPermission(DP_FEATURE_PUT_IMAGE)) {
+			return;
+		}
+		canvas::AclState *aclState = canvas->aclState();
+		if(!aclState ||
+		   !(aclState->canUseFeature(DP_FEATURE_EDIT_LAYERS) ||
+			 aclState->canUseFeature(DP_FEATURE_OWN_LAYERS))) {
+			m_doc->permissionDenied(DP_FEATURE_EDIT_LAYERS);
+			return;
+		}
+
+		drawdance::CanvasState canvasState =
+			canvas->paintEngine()->viewCanvasState();
+		const QRect canvasBounds(QPoint(), canvasState.size());
+		if(canvasBounds.isEmpty()) {
+			showErrorMessage(tr("The canvas is empty."));
+			return;
+		}
+
+		static PhotoDecompositionOptions lastDecompositionSettings;
+		PhotoDecompositionOptions options = lastDecompositionSettings;
+		if(!showPhotoDecompositionOptionsDialog(
+			   this, canvasBounds.size(), options)) {
+			return;
+		}
+		lastDecompositionSettings = options;
+
+		drawdance::ViewModeBuffer viewModeBuffer;
+		QImage sourceImage = canvas->paintEngine()->getFlatImage(
+			viewModeBuffer, canvasState, true, true, &canvasBounds);
+		if(sourceImage.isNull()) {
+			showErrorMessage(
+				tr("Could not export the source image for photo decomposition."));
+			return;
+		}
+
+		QTemporaryDir assetDir(
+			QDir::temp().filePath(QStringLiteral("underpaint-ai-assets-XXXXXX")));
+		if(!assetDir.isValid()) {
+			showErrorMessage(tr("Could not create AI asset directory."));
+			return;
+		}
+		assetDir.setAutoRemove(false);
+		const QString sourcePath =
+			QDir(assetDir.path()).filePath(QStringLiteral("source.png"));
+		if(!sourceImage.save(sourcePath, "PNG")) {
+			showErrorMessage(tr("Could not write AI source asset."));
+			return;
+		}
+
+		const int sourceLayerId = validInpaintAnchorLayer(
+			canvas->layerlist(), m_doc->toolCtrl()->activeLayer());
 		ai::JobRequest request =
-			ai::JobRequest::create(ai::Operation::GenerativeFill);
+			ai::JobRequest::create(ai::Operation::SceneSeparation);
+		ai::JobAsset sourceAsset;
+		sourceAsset.role = QStringLiteral("source-image");
+		sourceAsset.path = sourcePath;
+		sourceAsset.mimeType = QStringLiteral("image/png");
+		sourceAsset.metadata = QJsonObject{
+			{QStringLiteral("colorSpace"), QStringLiteral("srgb")},
+		};
+		request.inputs = {sourceAsset};
+		request.region = QJsonObject{
+			{QStringLiteral("x"), canvasBounds.x()},
+			{QStringLiteral("y"), canvasBounds.y()},
+			{QStringLiteral("width"), canvasBounds.width()},
+			{QStringLiteral("height"), canvasBounds.height()},
+		};
 		request.parameters = QJsonObject{
-			{QStringLiteral("prompt"), QString()},
-			{QStringLiteral("negativePrompt"), QString()},
-			{QStringLiteral("seed"), -1},
-			{QStringLiteral("cfg"), 5.0},
-			{QStringLiteral("denoise"), 0.75},
-			{QStringLiteral("candidateCount"), 1},
+			{QStringLiteral("maxRegions"), options.maxRegions},
+			{QStringLiteral("minRegionAreaPct"), options.minRegionAreaPct},
+		};
+		request.preferences = QJsonObject{
+			{QStringLiteral("maxRenderEdge"), 1024},
+			{QStringLiteral("cacheGuides"), true},
+			{QStringLiteral("safe4070Mode"), true},
+		};
+		request.source = QJsonObject{
+			{QStringLiteral("activeLayerId"), sourceLayerId},
+			{QStringLiteral("selectionSource"), QStringLiteral("full-canvas")},
+		};
+		request.provenance = QJsonObject{
+			{QStringLiteral("createdBy"), QStringLiteral("underpaint")},
+			{QStringLiteral("uiEntryPoint"), QStringLiteral("AI/Photo Decomposition")},
+		};
+
+		QProgressDialog *progress = new QProgressDialog(
+			tr("Decomposing photo into layers..."), QString(), 0,
+			qMax(1, options.maxRegions), this);
+		AiPreviewLabel *progressLabel = new AiPreviewLabel(progress);
+		progressLabel->setText(tr("Decomposing photo into layers..."));
+		progressLabel->setAlignment(Qt::AlignCenter);
+		progressLabel->setMinimumWidth(280);
+		progressLabel->setMinimumHeight(192);
+		progress->setLabel(progressLabel);
+		progress->setWindowTitle(tr("Photo Decomposition"));
+		progress->setWindowModality(Qt::WindowModal);
+		progress->setMinimumDuration(0);
+		progress->setAutoClose(false);
+		progress->setAutoReset(false);
+		progress->setValue(0);
+		progress->show();
+
+		ai::JobRunResult *result = new ai::JobRunResult;
+		QPointer<AiPreviewLabel> progressLabelPointer(progressLabel);
+		QPointer<QProgressDialog> progressPointer(progress);
+		const int progressRegions = qMax(1, options.maxRegions);
+		QThread *thread = QThread::create(
+			[request, result, progressLabelPointer, progressPointer,
+			 progressRegions] {
+			*result = ai::JobRunner::run(
+				request, QString(), 15 * 60 * 1000,
+				[progressLabelPointer, progressPointer,
+				 progressRegions](const QJsonObject &event) {
+					QMetaObject::invokeMethod(
+						qApp,
+						[progressLabelPointer, progressPointer, progressRegions,
+						 event] {
+							if(!progressLabelPointer || !progressPointer) {
+								return;
+							}
+							const QString type =
+								event.value(QStringLiteral("type")).toString();
+							if(type != QStringLiteral("preview") &&
+							   type != QStringLiteral("candidate")) {
+								return;
+							}
+							const QString imagePath =
+								event.value(QStringLiteral("imagePath")).toString();
+							QPixmap preview(imagePath);
+							if(preview.isNull()) {
+								return;
+							}
+							const int candidate =
+								event.value(QStringLiteral("candidate")).toInt();
+							QString text =
+								type == QStringLiteral("preview")
+									? MainWindow::tr("Region %1 preview")
+										  .arg(candidate)
+									: MainWindow::tr("Region %1 complete")
+										  .arg(candidate);
+							const QString label =
+								event.value(QStringLiteral("label")).toString();
+							if(!label.isEmpty()) {
+								text += MainWindow::tr(" - %1").arg(label);
+							}
+							progressLabelPointer->setToolTip(text);
+							progressLabelPointer->setPreviewPixmap(preview.scaled(
+								256, 192, Qt::KeepAspectRatio,
+								Qt::SmoothTransformation));
+							progressPointer->setMaximum(progressRegions);
+							progressPointer->setValue(
+								qMin(qMax(1, candidate), progressRegions));
+						},
+						Qt::QueuedConnection);
+				});
+		});
+		connect(thread, &QThread::finished, this, [=] {
+			progress->close();
+			progress->deleteLater();
+
+			const ai::JobRunResult jobResult = *result;
+			delete result;
+			thread->deleteLater();
+
+			canvas::CanvasModel *currentCanvas = m_doc->canvas();
+			if(!currentCanvas) {
+				showErrorMessage(
+					tr("The canvas was closed before AI results could import."));
+				return;
+			}
+			if(!jobResult.ok) {
+				showErrorMessageWithDetails(
+					tr("Photo decomposition worker failed."),
+					jobResult.errorMessage);
+				return;
+			}
+			if(jobResult.response.candidates.isEmpty()) {
+				showErrorMessage(
+					tr("The AI worker returned no decomposition layers."));
+				return;
+			}
+
+			canvas::LayerListModel *layers = currentCanvas->layerlist();
+			const int regionCount = jobResult.response.candidates.size();
+			QVector<int> layerIds = layers->getAvailableLayerIds(regionCount + 1);
+			if(layerIds.size() < regionCount + 1) {
+				showErrorMessage(
+					tr("Could not allocate layers for photo decomposition."));
+				return;
+			}
+
+			const uint8_t contextId = currentCanvas->localUserId();
+			const int groupId = layerIds.first();
+			net::MessageList messages;
+			messages.append(net::makeUndoPointMessage(contextId));
+			messages.append(
+				net::makeLayerTreeCreateMessage(
+					contextId, groupId, 0, qMax(0, sourceLayerId), 0,
+					DP_MSG_LAYER_TREE_CREATE_FLAGS_GROUP,
+					layers->getAvailableLayerName(
+						tr("Photo Decomposition"))));
+
+			QVector<int> importedLayerIds;
+			importedLayerIds.reserve(regionCount);
+			for(int i = 0; i < regionCount; ++i) {
+				const ai::JobCandidate &candidate =
+					jobResult.response.candidates.at(i);
+				QImage image(candidate.imagePath);
+				if(image.isNull()) {
+					continue;
+				}
+				const int layerId = layerIds.at(i + 1);
+				importedLayerIds.append(layerId);
+				messages.append(
+					net::makeLayerTreeCreateMessage(
+						contextId, layerId, 0, groupId, 0,
+						DP_MSG_LAYER_TREE_CREATE_FLAGS_INTO,
+						layers->getAvailableLayerName(
+							candidateLayerLabel(candidate))));
+				net::makePutImageMessagesCompat(
+					messages, contextId, layerId, DP_BLEND_MODE_NORMAL,
+					canvasBounds.x(), canvasBounds.y(), image,
+					currentCanvas->isCompatibilityMode());
+			}
+
+			if(importedLayerIds.isEmpty()) {
+				showErrorMessage(
+					tr("The AI worker returned unreadable decomposition layers."));
+				return;
+			}
+
+			layers->setLayerIdToSelect(importedLayerIds.first());
+			m_doc->client()->sendCommands(messages.size(), messages.constData());
+			utils::showInformation(
+				this, tr("Photo Decomposition"),
+				tr("Imported %1 decomposition layer(s).")
+					.arg(importedLayerIds.size()),
+				candidateDetailsText(jobResult));
+		});
+		thread->start();
+	});
+	connect(aiInpaint, &QAction::triggered, this, [=] {
+		canvas::CanvasModel *canvas = m_doc->canvas();
+		if(!canvas) {
+			showErrorMessage(tr("No canvas is available for inpaint."));
+			return;
+		}
+		if(!m_doc->checkPermission(DP_FEATURE_PUT_IMAGE)) {
+			return;
+		}
+		canvas::AclState *aclState = canvas->aclState();
+		if(!aclState ||
+		   !(aclState->canUseFeature(DP_FEATURE_EDIT_LAYERS) ||
+			 aclState->canUseFeature(DP_FEATURE_OWN_LAYERS))) {
+			m_doc->permissionDenied(DP_FEATURE_EDIT_LAYERS);
+			return;
+		}
+
+		canvas::SelectionModel *selection = canvas->selection();
+		drawdance::CanvasState canvasState =
+			canvas->paintEngine()->viewCanvasState();
+		const QRect canvasBounds(QPoint(), canvasState.size());
+		QRect selectionRegion;
+		QRect exportRegion;
+		QImage mask;
+		if(!selection || !selection->isValid()) {
+			QAction *selectionTool = getAction("toolselectrect");
+			if(selectionTool && !selectionTool->isChecked()) {
+				selectionTool->trigger();
+			}
+			showErrorMessage(
+				tr("Select the area to repaint, then run Inpaint again."));
+			return;
+		}
+
+		selectionRegion = canvasBounds.intersected(selection->bounds());
+		const int contextPadding = 128;
+		exportRegion = selectionRegion
+						   .adjusted(
+							   -contextPadding, -contextPadding, contextPadding,
+							   contextPadding)
+						   .intersected(canvasBounds);
+		QString selectionSource = QStringLiteral("current-selection");
+		mask = selectionMaskToInpaintMask(
+			selection->image(), selectionRegion, exportRegion);
+		if(selectionRegion.isEmpty() || exportRegion.isEmpty()) {
+			showErrorMessage(tr("The selected area is empty."));
+			return;
+		}
+		if(mask.isNull()) {
+			showErrorMessage(tr("Could not export the selection mask for AI."));
+			return;
+		}
+
+		const int sourceLayerId = validInpaintAnchorLayer(
+			canvas->layerlist(), m_doc->toolCtrl()->activeLayer());
+		static InpaintOptions lastInpaintSettings;
+		InpaintOptions options = lastInpaintSettings;
+		options.prompt.clear();
+		options.negativePrompt.clear();
+		if(!showInpaintOptionsDialog(this, selectionRegion, options)) {
+			return;
+		}
+		lastInpaintSettings = options;
+		lastInpaintSettings.prompt.clear();
+		lastInpaintSettings.negativePrompt.clear();
+
+		drawdance::ViewModeBuffer viewModeBuffer;
+		QImage sourceImage = canvas->paintEngine()->getFlatImage(
+			viewModeBuffer, canvasState, true, true, &exportRegion);
+		if(sourceImage.isNull()) {
+			showErrorMessage(tr("Could not export the source image for AI."));
+			return;
+		}
+
+		QTemporaryDir assetDir(
+			QDir::temp().filePath(QStringLiteral("underpaint-ai-assets-XXXXXX")));
+		if(!assetDir.isValid()) {
+			showErrorMessage(tr("Could not create AI asset directory."));
+			return;
+		}
+		assetDir.setAutoRemove(false);
+		const QString sourcePath =
+			QDir(assetDir.path()).filePath(QStringLiteral("source.png"));
+		const QString maskPath =
+			QDir(assetDir.path()).filePath(QStringLiteral("mask.png"));
+		if(!sourceImage.save(sourcePath, "PNG") || !mask.save(maskPath, "PNG")) {
+			showErrorMessage(tr("Could not write AI source assets."));
+			return;
+		}
+
+		ai::JobRequest request =
+			ai::JobRequest::create(ai::Operation::Inpaint);
+		ai::JobAsset sourceAsset;
+		sourceAsset.role = QStringLiteral("source-image");
+		sourceAsset.path = sourcePath;
+		sourceAsset.mimeType = QStringLiteral("image/png");
+		sourceAsset.metadata = QJsonObject{
+			{QStringLiteral("colorSpace"), QStringLiteral("srgb")},
+		};
+		ai::JobAsset maskAsset;
+		maskAsset.role = QStringLiteral("mask");
+		maskAsset.path = maskPath;
+		maskAsset.mimeType = QStringLiteral("image/png");
+		maskAsset.metadata = QJsonObject{
+			{QStringLiteral("whiteMeans"), QStringLiteral("editable-region")},
+		};
+		request.inputs = {sourceAsset, maskAsset};
+		request.parameters = QJsonObject{
+			{QStringLiteral("prompt"), options.prompt},
+			{QStringLiteral("negativePrompt"), options.negativePrompt},
+			{QStringLiteral("seed"), options.seed},
+			{QStringLiteral("cfg"), options.cfg},
+			{QStringLiteral("denoise"), options.denoise},
+			{QStringLiteral("steps"), options.steps},
+			{QStringLiteral("candidateCount"), options.candidateCount},
+			{QStringLiteral("edgeFeatherPx"), options.edgeFeatherPx},
 		};
 		request.preferences = QJsonObject{
 			{QStringLiteral("maxRenderEdge"), 1024},
@@ -7607,52 +8582,222 @@ void MainWindow::setupActions()
 			{QStringLiteral("safe4070Mode"), true},
 		};
 
-		canvas::CanvasModel *canvas = m_doc->canvas();
-		QRect region;
-		QString selectionSource = QStringLiteral("full-canvas-placeholder");
-		if(canvas) {
-			canvas::SelectionModel *selection = canvas->selection();
-			if(selection && selection->isValid()) {
-				region = selection->bounds();
-				selectionSource = QStringLiteral("current-selection");
-			} else {
-				region = QRect(QPoint(), canvas->size());
-			}
-		}
 		request.region = QJsonObject{
-			{QStringLiteral("x"), region.x()},
-			{QStringLiteral("y"), region.y()},
-			{QStringLiteral("width"), region.width()},
-			{QStringLiteral("height"), region.height()},
-			{QStringLiteral("contextPadding"), 128},
+			{QStringLiteral("x"), exportRegion.x()},
+			{QStringLiteral("y"), exportRegion.y()},
+			{QStringLiteral("width"), exportRegion.width()},
+			{QStringLiteral("height"), exportRegion.height()},
+			{QStringLiteral("selectionX"), selectionRegion.x()},
+			{QStringLiteral("selectionY"), selectionRegion.y()},
+			{QStringLiteral("selectionWidth"), selectionRegion.width()},
+			{QStringLiteral("selectionHeight"), selectionRegion.height()},
+			{QStringLiteral("contextPadding"), contextPadding},
 		};
 		request.source = QJsonObject{
-			{QStringLiteral("activeLayerId"), m_doc->toolCtrl()->activeLayer()},
+			{QStringLiteral("activeLayerId"), sourceLayerId},
 			{QStringLiteral("selectionSource"), selectionSource},
 		};
 		request.provenance = QJsonObject{
 			{QStringLiteral("createdBy"), QStringLiteral("underpaint")},
-			{QStringLiteral("uiEntryPoint"), QStringLiteral("AI/Generative Fill")},
+			{QStringLiteral("uiEntryPoint"), QStringLiteral("AI/Inpaint")},
 		};
 
-		utils::ScopedOverrideCursor cursor;
-		ai::JobRunResult result = ai::JobRunner::run(request);
-		if(!result.ok) {
-			showErrorMessageWithDetails(
-				tr("Generative fill worker failed."), result.errorMessage);
-			return;
-		}
+		QProgressDialog *progress = new QProgressDialog(
+			tr("Loading AI model and generating candidates..."), QString(), 0,
+			qMax(1, options.candidateCount * options.steps), this);
+		AiPreviewLabel *progressLabel =
+			new AiPreviewLabel(progress);
+		progressLabel->setText(tr("Loading AI model and generating candidates..."));
+		progressLabel->setAlignment(Qt::AlignCenter);
+		progressLabel->setMinimumWidth(280);
+		progressLabel->setMinimumHeight(192);
+		progress->setLabel(progressLabel);
+		progress->setWindowTitle(tr("Inpaint"));
+		progress->setWindowModality(Qt::WindowModal);
+		progress->setMinimumDuration(0);
+		progress->setAutoClose(false);
+		progress->setAutoReset(false);
+		progress->setValue(0);
+		progress->show();
 
-		QString details = tr("Job directory: %1").arg(result.jobDirectoryPath);
-		if(!result.response.candidates.isEmpty()) {
-			const ai::JobCandidate &candidate =
-				result.response.candidates.constFirst();
-			details += tr("\nCandidate image: %1").arg(candidate.imagePath);
-		}
-		utils::showInformation(
-			this, tr("Generative Fill"),
-			tr("The local AI worker returned a placeholder candidate."),
-			details);
+		ai::JobRunResult *result = new ai::JobRunResult;
+		QPointer<AiPreviewLabel> progressLabelPointer(progressLabel);
+		QPointer<QProgressDialog> progressPointer(progress);
+		const int progressSteps = qMax(1, options.steps);
+		const int progressCandidates = qMax(1, options.candidateCount);
+		QThread *thread = QThread::create(
+			[request, result, progressLabelPointer, progressPointer,
+			 progressSteps, progressCandidates] {
+			*result = ai::JobRunner::run(
+				request, QString(), 15 * 60 * 1000,
+				[progressLabelPointer, progressPointer, progressSteps,
+				 progressCandidates](const QJsonObject &event) {
+					QMetaObject::invokeMethod(
+						qApp,
+						[progressLabelPointer, progressPointer, progressSteps,
+						 progressCandidates, event] {
+							if(!progressLabelPointer || !progressPointer) {
+								return;
+							}
+							const QString type =
+								event.value(QStringLiteral("type")).toString();
+							if(type != QStringLiteral("preview") &&
+							   type != QStringLiteral("candidate")) {
+								return;
+							}
+							const QString imagePath =
+								event.value(QStringLiteral("imagePath")).toString();
+							QPixmap preview(imagePath);
+							if(preview.isNull()) {
+								return;
+							}
+							const int candidate =
+								event.value(QStringLiteral("candidate")).toInt();
+							const int step = event.value(QStringLiteral("step")).toInt();
+							const int steps =
+								event.value(QStringLiteral("steps")).toInt();
+							const int seed = event.value(QStringLiteral("seed")).toInt(-1);
+							QString text = type == QStringLiteral("preview")
+											   ? MainWindow::tr(
+													 "Candidate %1 preview")
+													 .arg(candidate)
+											   : MainWindow::tr(
+													 "Candidate %1 complete")
+													 .arg(candidate);
+							if(step > 0 && steps > 0) {
+								text += MainWindow::tr(" - step %1/%2")
+											.arg(step)
+											.arg(steps);
+							}
+							if(seed >= 0) {
+								text += MainWindow::tr(" - seed %1").arg(seed);
+							}
+							progressLabelPointer->setToolTip(text);
+							progressLabelPointer->setPreviewPixmap(preview.scaled(
+								256, 192, Qt::KeepAspectRatio,
+								Qt::SmoothTransformation));
+							const int candidateIndex = qMax(1, candidate);
+							int progressValue = 0;
+							if(type == QStringLiteral("preview")) {
+								const int stepCount = steps > 0 ? steps : progressSteps;
+								progressValue =
+									(candidateIndex - 1) * progressSteps +
+									qMin(qMax(1, step), stepCount);
+							} else {
+								progressValue = candidateIndex * progressSteps;
+							}
+							progressPointer->setMaximum(
+								qMax(1, progressCandidates * progressSteps));
+							progressPointer->setValue(qMin(
+								progressValue, progressPointer->maximum()));
+						},
+						Qt::QueuedConnection);
+				});
+		});
+		connect(thread, &QThread::finished, this, [=] {
+			progress->close();
+			progress->deleteLater();
+
+			const ai::JobRunResult jobResult = *result;
+			delete result;
+			thread->deleteLater();
+
+			canvas::CanvasModel *currentCanvas = m_doc->canvas();
+			if(!currentCanvas) {
+				showErrorMessage(
+					tr("The canvas was closed before AI results could import."));
+				return;
+			}
+
+			if(!jobResult.ok) {
+				showErrorMessageWithDetails(
+					tr("Inpaint worker failed."),
+					jobResult.errorMessage);
+				return;
+			}
+
+			if(jobResult.response.candidates.isEmpty()) {
+				showErrorMessage(tr("The AI worker returned no candidates."));
+				return;
+			}
+
+			canvas::LayerListModel *layers = currentCanvas->layerlist();
+			const int candidateCount = jobResult.response.candidates.size();
+			QVector<int> layerIds =
+				layers->getAvailableLayerIds(candidateCount + 1);
+			if(layerIds.size() < candidateCount + 1) {
+				showErrorMessage(
+					tr("Could not allocate layers for AI candidates."));
+				return;
+			}
+
+			const uint8_t contextId = currentCanvas->localUserId();
+			const int groupId = layerIds.first();
+			net::MessageList messages;
+			messages.append(net::makeUndoPointMessage(contextId));
+			messages.append(
+				net::makeLayerTreeCreateMessage(
+					contextId, groupId, 0, qMax(0, sourceLayerId), 0,
+					DP_MSG_LAYER_TREE_CREATE_FLAGS_GROUP,
+					layers->getAvailableLayerName(
+						tr("Inpaint Candidates"))));
+
+			QVector<int> importedLayerIds;
+			importedLayerIds.reserve(candidateCount);
+			QVector<ai::JobCandidate> importedCandidates;
+			importedCandidates.reserve(candidateCount);
+			for(int i = 0; i < candidateCount; ++i) {
+				const ai::JobCandidate &candidate =
+					jobResult.response.candidates.at(i);
+				QImage image(candidate.imagePath);
+				if(image.isNull()) {
+					continue;
+				}
+				const int layerId = layerIds.at(i + 1);
+				importedLayerIds.append(layerId);
+				importedCandidates.append(candidate);
+				messages.append(
+					net::makeLayerTreeCreateMessage(
+						contextId, layerId, 0, groupId, 0,
+						DP_MSG_LAYER_TREE_CREATE_FLAGS_INTO,
+						layers->getAvailableLayerName(
+							candidateLayerLabel(candidate))));
+				net::makePutImageMessagesCompat(
+					messages, contextId, layerId, DP_BLEND_MODE_NORMAL,
+					exportRegion.x(), exportRegion.y(), image,
+					currentCanvas->isCompatibilityMode());
+			}
+
+			if(importedLayerIds.isEmpty()) {
+				showErrorMessage(
+					tr("The AI worker returned unreadable candidates."));
+				return;
+			}
+
+			layers->setLayerIdToSelect(importedLayerIds.first());
+			m_doc->client()->sendCommands(messages.size(), messages.constData());
+			for(int i = 1; i < importedLayerIds.size(); ++i) {
+				currentCanvas->paintEngine()->setLayerVisibility(
+					importedLayerIds.at(i), true);
+			}
+
+			ai::JobRunResult importedJobResult = jobResult;
+			importedJobResult.response.candidates = importedCandidates;
+			const bool accepted = showInpaintCandidateDialog(
+				this, currentCanvas, importedLayerIds, importedJobResult);
+			if(!accepted) {
+				net::MessageList deleteMessages;
+				deleteMessages.append(net::makeUndoPointMessage(contextId));
+				deleteMessages.append(
+					net::makeLayerTreeDeleteMessage(contextId, groupId, 0));
+				m_doc->client()->sendCommands(
+					deleteMessages.size(), deleteMessages.constData());
+			}
+			if(sourceLayerId > 0) {
+				m_dockLayers->selectLayer(sourceLayerId);
+			}
+		});
+		thread->start();
 	});
 	connect(aiOutpaint, &QAction::triggered, this, [=] {
 		showAiPlaceholder(
@@ -7688,7 +8833,7 @@ void MainWindow::setupActions()
 
 	QMenu *aiMenu = menuBar()->addMenu(tr("AI"));
 	aiMenu->addAction(aiSceneSeparation);
-	aiMenu->addAction(aiGenerativeFill);
+	aiMenu->addAction(aiInpaint);
 	aiMenu->addAction(aiOutpaint);
 	aiMenu->addSeparator();
 	aiMenu->addAction(aiModelManager);

@@ -61,14 +61,14 @@ AiModelManagerDialog::AiModelManagerDialog(QWidget *parent)
 		tr("Compact matting or RMBG-class model"), tr("Not installed"),
 		tr("Separate subject masks before repair or replacement workflows."));
 	addModelRole(
-		tr("Generative fill"), tr("Selection fill and repair candidates"),
+		tr("Inpaint"), tr("Selection repair and fill candidates"),
 		tr("XL-class inpainting model"), tr("Not installed"),
 		tr("Primary local diffusion role; optimized by crop, padding, tiling, "
 		   "and sequential candidates."));
 	addModelRole(
 		tr("Outpaint"), tr("Intentional canvas extension"),
 		tr("XL-class inpainting model"), tr("Not installed"),
-		tr("Shares the region-operation pipeline with generative fill."));
+		tr("Shares the region-operation pipeline with inpaint."));
 	addModelRole(
 		tr("Detail upscaler"), tr("Enhancement after restoration"),
 		tr("Compact restoration/upscale model"), tr("Not installed"),

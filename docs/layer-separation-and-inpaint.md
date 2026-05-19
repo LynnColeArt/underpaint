@@ -1,13 +1,13 @@
-# Layer Separation And Generative Fill
+# Layer Separation And Inpaint
 
-This spec defines the first major Underpaint workflows: scene decomposition, manual generative fill, and intentional outpaint.
+This spec defines the first major Underpaint workflows: scene decomposition, manual inpaint, and intentional outpaint.
 
 The core idea is simple: AI operations produce editable layers, masks, maps, and candidate groups. The user stays in the artwork rather than moving into a node graph.
 
 ## Product Goals
 
 - Make scene separation feel like an artist-facing layer operation.
-- Make generative fill approachable like Photoshop.
+- Make inpaint approachable without hiding its editable layer and mask outputs.
 - Expose advanced controls for users who need repeatability and precision.
 - Make outpaint intentional, not automatic.
 - Preserve the original image.
@@ -109,6 +109,19 @@ Analysis
   Segmentation map
 ```
 
+### Current Implementation Slice
+
+The first implementation is available as `AI > Photo Decomposition...`. It
+captures the visible canvas, submits a `scene-separation` job, and imports the
+returned RGBA region images as normal layers inside a `Photo Decomposition`
+group.
+
+The current worker output is deliberately provisional: it creates deterministic
+luminance-based placeholder regions so the editor workflow can be tested before
+SAM-like segmentation, labeling, and background repair are connected. The
+important behavior is that every proposed region already enters the document as
+an inspectable layer with a corresponding mask path in the AI response.
+
 ### Region Editing
 
 Users must be able to:
@@ -150,14 +163,14 @@ Outputs:
 
 The user chooses the best candidate or reruns the region with edited mask/prompt/settings.
 
-## Manual Generative Fill
+## Manual Inpaint
 
-Manual Generative Fill is the Photoshop-like entry point.
+Manual Inpaint is the familiar selection-based entry point.
 
 ### Default Workflow
 
 1. User selects an area.
-2. Generative Fill panel appears or becomes active.
+2. Inpaint panel appears or becomes active.
 3. User optionally enters a prompt.
 4. User clicks Generate.
 5. Underpaint creates a candidate layer group.
@@ -237,7 +250,7 @@ Global defaults should live in an AI Preferences page.
 Recommended defaults:
 
 - Scene repair variations: 3
-- Generative Fill variations: 3
+- Inpaint variations: 3
 - Outpaint variations: 3
 - Detail Enhance variations: 1 or 2
 - seed mode: random
@@ -268,7 +281,7 @@ The UI should explain when a request is large and suggest reducing crop size or 
 A useful first slice is:
 
 1. User selects a region.
-2. Generative Fill panel captures prompt/settings.
+2. Inpaint panel captures prompt/settings.
 3. App exports image crop and mask.
 4. Placeholder worker returns three tinted/generated placeholder images.
 5. App creates a candidate layer group.
@@ -276,3 +289,7 @@ A useful first slice is:
 
 This proves the UX and artifact loop before real model integration.
 
+Status: the first placeholder artifact loop now exists. The current desktop
+action exports the region source and mask, receives three source-sized
+placeholder variants from the local worker stub, and imports readable variants
+as candidate layers.

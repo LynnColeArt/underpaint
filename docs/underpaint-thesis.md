@@ -8,12 +8,12 @@ The project goal is not to make another prompt box with image previews. Underpai
 
 Good art tools are intuitive, familiar, and satisfying in a predictable way. Great art tools also give the user miles of depth when they need controlled, specific work.
 
-Underpaint should feel approachable like Photoshop's AI features, but deeper. The user should not need a node workflow to perform advanced AI-assisted restoration. Advanced controls should modify the current operation, not force the user to assemble the operation.
+Underpaint should feel approachable at first touch, but deeper when the user wants control. The user should not need a node workflow to perform advanced AI-assisted restoration. Advanced controls should modify the current operation, not force the user to assemble the operation.
 
 The target is:
 
 ```text
-Photoshop-level accessibility
+Accessible restoration workflow
 + ComfyUI-level power
 + layers and masks instead of node graphs
 ```
@@ -115,7 +115,7 @@ Scene decomposition should create a reconstruction workspace, not destroy the or
 
 ## Generative Region Operations
 
-Generative fill, outpaint, and scene-repair fills should share one operation model:
+Inpaint, outpaint, and scene-repair fills should share one operation model:
 
 ```text
 source image/layers
@@ -130,7 +130,7 @@ source image/layers
 Entry points:
 
 - Scene separation repair: model-created mask.
-- Manual generative fill: user-created selection or mask.
+- Manual inpaint: user-created selection or mask.
 - Outpaint: user-created canvas expansion and edge/transparent-area mask.
 
 Canvas resize is not outpaint. Expanding the canvas creates empty space. Outpaint is a deliberate operation the user starts.
@@ -142,7 +142,7 @@ Generative operations should default to multiple candidates, usually two or thre
 Example layer group:
 
 ```text
-Generative Fill - continue lake water behind rock
+Inpaint - continue lake water behind rock
   Candidate 1 [visible]
   Candidate 2
   Candidate 3
@@ -250,7 +250,7 @@ Users should think in capabilities, not model names:
 
 - background removal
 - segmentation
-- generative fill
+- inpaint
 - outpaint
 - detail upscale
 - face restoration
@@ -285,4 +285,3 @@ Premium value can live in hosted services:
 - support
 
 Model weights have their own licenses. The app should track model licenses explicitly and prefer license-clean defaults for the community edition.
-

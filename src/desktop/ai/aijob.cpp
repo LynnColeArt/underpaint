@@ -68,8 +68,8 @@ QString operationKey(Operation operation)
 	switch(operation) {
 	case Operation::SceneSeparation:
 		return QStringLiteral("scene-separation");
-	case Operation::GenerativeFill:
-		return QStringLiteral("generative-fill");
+	case Operation::Inpaint:
+		return QStringLiteral("inpaint");
 	case Operation::Outpaint:
 		return QStringLiteral("outpaint");
 	case Operation::BackgroundRemoval:
@@ -87,7 +87,7 @@ QString operationKey(Operation operation)
 	case Operation::FaceRestore:
 		return QStringLiteral("face-restore");
 	}
-	return QStringLiteral("generative-fill");
+	return QStringLiteral("inpaint");
 }
 
 QString operationDisplayName(Operation operation)
@@ -95,8 +95,8 @@ QString operationDisplayName(Operation operation)
 	switch(operation) {
 	case Operation::SceneSeparation:
 		return QStringLiteral("Scene Separation");
-	case Operation::GenerativeFill:
-		return QStringLiteral("Generative Fill");
+	case Operation::Inpaint:
+		return QStringLiteral("Inpaint");
 	case Operation::Outpaint:
 		return QStringLiteral("Outpaint");
 	case Operation::BackgroundRemoval:
@@ -114,7 +114,7 @@ QString operationDisplayName(Operation operation)
 	case Operation::FaceRestore:
 		return QStringLiteral("Face Restore");
 	}
-	return QStringLiteral("Generative Fill");
+	return QStringLiteral("Inpaint");
 }
 
 Operation operationFromKey(const QString &key, bool *ok)
@@ -124,7 +124,8 @@ Operation operationFromKey(const QString &key, bool *ok)
 		Operation operation;
 	} operations[] = {
 		{"scene-separation", Operation::SceneSeparation},
-		{"generative-fill", Operation::GenerativeFill},
+		{"inpaint", Operation::Inpaint},
+		{"generative-fill", Operation::Inpaint},
 		{"outpaint", Operation::Outpaint},
 		{"background-removal", Operation::BackgroundRemoval},
 		{"upscale", Operation::Upscale},
@@ -145,7 +146,7 @@ Operation operationFromKey(const QString &key, bool *ok)
 	if(ok) {
 		*ok = false;
 	}
-	return Operation::GenerativeFill;
+	return Operation::Inpaint;
 }
 
 QString jobStatusKey(JobStatus status)
@@ -269,7 +270,7 @@ JobRequest JobRequest::fromJsonObject(const QJsonObject &json)
 	request.operation = operationFromKey(
 		json.value(QStringLiteral("operation")).toString(), &operationOk);
 	if(!operationOk) {
-		request.operation = Operation::GenerativeFill;
+		request.operation = Operation::Inpaint;
 	}
 	request.inputs =
 		assetsFromJson(json.value(QStringLiteral("inputs")).toArray());

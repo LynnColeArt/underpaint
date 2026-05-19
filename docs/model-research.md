@@ -40,7 +40,7 @@ Avoid defaulting to models that:
 | Normal map non-default | DSINE | High-quality CVPR 2024 normal estimation. | Non-commercial/internal/academic license. | Do not default for community/pro unless relicensed. |
 | Pose map | DWPose tiny/small | Official whole-body pose models from tiny to large; ONNX path; Apache-2.0. | Apache-2.0. | Better fit than OpenPose for local ControlNet-style guides. |
 | Control-guided generation | XL-compatible ControlNet or adapter variants | Standard control mechanism for depth, pose, edge, normal, scribble maps, but must match the XL-class generation target. | ControlNet repo Apache-2.0; individual weights vary. | Need weight-specific license and XL compatibility review. |
-| Generative fill / outpaint | XL-class inpainting models | SD 1.5 is below the product quality bar. XL-class models should be the first serious target, with careful crop/mask/context scheduling for 4070-class GPUs. | License varies by checkpoint; SDXL inpainting uses OpenRAIL++. | Primary diffusion research target. Benchmark specific XL inpaint models for quality, memory, speed, and restoration behavior. |
+| Inpaint / outpaint | XL-class inpainting models | SD 1.5 is below the product quality bar. XL-class models should be the first serious target, with careful crop/mask/context scheduling for 4070-class GPUs. | License varies by checkpoint; SDXL inpainting uses OpenRAIL++. | Primary diffusion research target. Benchmark specific XL inpaint models for quality, memory, speed, and restoration behavior. |
 | Lightweight fallback fill / outpaint | Defer | Smaller models are tempting, but the product should not launch around visibly weak restoration fills. | TBD. | Research only after an XL baseline is working. |
 | Detail upscale | Real-ESRGAN x2/x4plus and realesr-general-x4v3 | Standard practical upscaler; tiny general model is explicitly described as lower memory/time. | Real-ESRGAN repo BSD-3-Clause; verify weights. | Strong first default for detail enhancement. |
 | Face restoration | GFPGAN v1.3/v1.2 | Apache-2.0, no custom CUDA extensions for clean version, integrates with Real-ESRGAN background upsampler. | Apache-2.0. | Strong first default, but UI must warn that identity may change. |
@@ -99,7 +99,7 @@ Outputs:
 - source snapshot
 - seed/CFG/denoise/steps metadata
 
-### Manual Generative Fill
+### Manual Inpaint
 
 Inputs:
 
@@ -117,6 +117,16 @@ Outputs:
 - hidden alternates
 - mask used
 - provenance
+
+First local baseline:
+
+- worker: `tools/ai/underpaint-diffusers-worker.py`
+- default model: `diffusers/stable-diffusion-xl-1.0-inpainting-0.1`
+- execution: one candidate at a time, using the same source crop and mask
+- environment switch: `UNDERPAINT_AI_WORKER`
+
+This is a baseline for quality and runtime behavior, not a final bundled model
+choice.
 
 ### Intentional Outpaint
 
