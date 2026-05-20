@@ -111,7 +111,9 @@ extern "C" {
 #include <QActionGroup>
 #include <QApplication>
 #include <QAbstractItemView>
+#include <QCheckBox>
 #include <QCloseEvent>
+#include <QComboBox>
 #include <QDesktopServices>
 #include <QDialog>
 #include <QDialogButtonBox>
@@ -120,11 +122,13 @@ extern "C" {
 #include <QEasingCurve>
 #include <QFile>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QIcon>
 #include <QImageReader>
 #include <QImageWriter>
 #include <QHBoxLayout>
 #include <QInputDialog>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonParseError>
@@ -153,6 +157,7 @@ extern "C" {
 #include <QSpinBox>
 #include <QStatusBar>
 #include <QStyle>
+#include <QStringList>
 #include <QTabBar>
 #include <QTemporaryDir>
 #include <QTemporaryFile>
@@ -4619,8 +4624,24 @@ struct InpaintOptions {
 	double cfg = 5.0;
 	double denoise = 0.75;
 	int steps = 20;
+	QString scheduler = QStringLiteral("euler");
+	bool detailPassEnabled = false;
 	int candidateCount = 3;
 	int edgeFeatherPx = 24;
+};
+
+struct DetailPassOptions {
+	bool enabled = false;
+	bool faceEnabled = true;
+	bool bodyEnabled = false;
+	bool handsEnabled = false;
+	double detectionConfidence = 0.5;
+	int maxRegions = 4;
+	int maskPaddingPx = 32;
+	double denoise = 0.35;
+	int steps = 28;
+	bool inheritSampler = true;
+	QString scheduler = QStringLiteral("dpmpp-3m-karras");
 };
 
 struct PhotoDecompositionOptions {
@@ -4748,6 +4769,259 @@ QWidget *makeIntSlider(
 	return widget;
 }
 
+DetailPassOptions defaultDetailPassOptions()
+{
+	return DetailPassOptions{};
+}
+
+DetailPassOptions loadDetailPassOptions()
+{
+	DetailPassOptions defaults = defaultDetailPassOptions();
+	QSettings settings;
+	settings.beginGroup(QStringLiteral("underpaint/ai/detailPass"));
+	DetailPassOptions options;
+	options.enabled =
+		settings.value(QStringLiteral("enabled"), defaults.enabled).toBool();
+	options.faceEnabled =
+		settings.value(QStringLiteral("faceEnabled"), defaults.faceEnabled)
+			.toBool();
+	options.bodyEnabled =
+		settings.value(QStringLiteral("bodyEnabled"), defaults.bodyEnabled)
+			.toBool();
+	options.handsEnabled =
+		settings.value(QStringLiteral("handsEnabled"), defaults.handsEnabled)
+			.toBool();
+	options.detectionConfidence =
+		settings.value(
+					QStringLiteral("detectionConfidence"),
+					defaults.detectionConfidence)
+			.toDouble();
+	options.maxRegions =
+		settings.value(QStringLiteral("maxRegions"), defaults.maxRegions).toInt();
+	options.maskPaddingPx =
+		settings.value(QStringLiteral("maskPaddingPx"), defaults.maskPaddingPx)
+			.toInt();
+	options.denoise =
+		settings.value(QStringLiteral("denoise"), defaults.denoise).toDouble();
+	options.steps =
+		settings.value(QStringLiteral("steps"), defaults.steps).toInt();
+	options.inheritSampler =
+		settings.value(QStringLiteral("inheritSampler"), defaults.inheritSampler)
+			.toBool();
+	options.scheduler =
+		settings.value(QStringLiteral("scheduler"), defaults.scheduler).toString();
+	settings.endGroup();
+
+	options.detectionConfidence =
+		qBound(0.01, options.detectionConfidence, 1.0);
+	options.maxRegions = qBound(1, options.maxRegions, 16);
+	options.maskPaddingPx = qBound(0, options.maskPaddingPx, 256);
+	options.denoise = qBound(0.05, options.denoise, 1.0);
+	options.steps = qBound(1, options.steps, 200);
+	if(options.scheduler.isEmpty()) {
+		options.scheduler = defaults.scheduler;
+	}
+	return options;
+}
+
+void saveDetailPassOptions(const DetailPassOptions &options)
+{
+	QSettings settings;
+	settings.beginGroup(QStringLiteral("underpaint/ai/detailPass"));
+	settings.setValue(QStringLiteral("enabled"), options.enabled);
+	settings.setValue(QStringLiteral("faceEnabled"), options.faceEnabled);
+	settings.setValue(QStringLiteral("bodyEnabled"), options.bodyEnabled);
+	settings.setValue(QStringLiteral("handsEnabled"), options.handsEnabled);
+	settings.setValue(
+		QStringLiteral("detectionConfidence"), options.detectionConfidence);
+	settings.setValue(QStringLiteral("maxRegions"), options.maxRegions);
+	settings.setValue(QStringLiteral("maskPaddingPx"), options.maskPaddingPx);
+	settings.setValue(QStringLiteral("denoise"), options.denoise);
+	settings.setValue(QStringLiteral("steps"), options.steps);
+	settings.setValue(QStringLiteral("inheritSampler"), options.inheritSampler);
+	settings.setValue(QStringLiteral("scheduler"), options.scheduler);
+	settings.endGroup();
+}
+
+QString detailPassSummary(const DetailPassOptions &options)
+{
+	if(!options.enabled) {
+		return MainWindow::tr("Off");
+	}
+	QStringList enabledParts;
+	if(options.faceEnabled) {
+		enabledParts.append(MainWindow::tr("face"));
+	}
+	if(options.bodyEnabled) {
+		enabledParts.append(MainWindow::tr("body"));
+	}
+	if(options.handsEnabled) {
+		enabledParts.append(MainWindow::tr("hands"));
+	}
+	return enabledParts.isEmpty()
+			   ? MainWindow::tr("On, no regions enabled")
+			   : MainWindow::tr("On: %1").arg(enabledParts.join(QStringLiteral(", ")));
+}
+
+void addSchedulerChoices(QComboBox *scheduler)
+{
+	scheduler->addItem(MainWindow::tr("Euler"), QStringLiteral("euler"));
+	scheduler->addItem(MainWindow::tr("Euler A"), QStringLiteral("euler-a"));
+	scheduler->addItem(MainWindow::tr("DPM++ 3M"), QStringLiteral("dpmpp-3m"));
+	scheduler->addItem(
+		MainWindow::tr("DPM++ 3M Karras"),
+		QStringLiteral("dpmpp-3m-karras"));
+}
+
+void selectScheduler(QComboBox *scheduler, const QString &value)
+{
+	const int index = scheduler->findData(value);
+	scheduler->setCurrentIndex(index >= 0 ? index : 0);
+}
+
+QJsonObject detailPassParameters(bool enabled, const QString &jobScheduler)
+{
+	DetailPassOptions options = loadDetailPassOptions();
+	const QString scheduler =
+		options.inheritSampler ? jobScheduler : options.scheduler;
+	return QJsonObject{
+		{QStringLiteral("enabled"), enabled},
+		{QStringLiteral("faceEnabled"), options.faceEnabled},
+		{QStringLiteral("bodyEnabled"), options.bodyEnabled},
+		{QStringLiteral("handsEnabled"), options.handsEnabled},
+		{QStringLiteral("detectionConfidence"), options.detectionConfidence},
+		{QStringLiteral("maxRegions"), options.maxRegions},
+		{QStringLiteral("maskPaddingPx"), options.maskPaddingPx},
+		{QStringLiteral("denoise"), options.denoise},
+		{QStringLiteral("steps"), options.steps},
+		{QStringLiteral("scheduler"), scheduler},
+		{QStringLiteral("inheritSampler"), options.inheritSampler},
+	};
+}
+
+bool showDetailPassSettingsDialog(QWidget *parent)
+{
+	QDialog dialog(parent);
+	dialog.setWindowTitle(MainWindow::tr("Face & Body Detail Settings"));
+	dialog.resize(520, 420);
+
+	QVBoxLayout *layout = new QVBoxLayout(&dialog);
+	QLabel *summary = new QLabel(
+		MainWindow::tr(
+			"Configure targeted detail passes that can run after inpaint and "
+			"outpaint candidates are generated."),
+		&dialog);
+	summary->setWordWrap(true);
+	layout->addWidget(summary);
+
+	QGroupBox *regionsGroup = new QGroupBox(MainWindow::tr("Regions"), &dialog);
+	QFormLayout *regionsForm = new QFormLayout(regionsGroup);
+	QCheckBox *enabled =
+		new QCheckBox(MainWindow::tr("Enable detail pass by default"), regionsGroup);
+	QCheckBox *faces =
+		new QCheckBox(MainWindow::tr("Face detailing"), regionsGroup);
+	QCheckBox *bodies =
+		new QCheckBox(MainWindow::tr("Body detailing"), regionsGroup);
+	QCheckBox *hands =
+		new QCheckBox(MainWindow::tr("Hand detailing"), regionsGroup);
+	regionsForm->addRow(QString(), enabled);
+	regionsForm->addRow(QString(), faces);
+	regionsForm->addRow(QString(), bodies);
+	regionsForm->addRow(QString(), hands);
+	layout->addWidget(regionsGroup);
+
+	QGroupBox *detectionGroup =
+		new QGroupBox(MainWindow::tr("Detection"), &dialog);
+	QFormLayout *detectionForm = new QFormLayout(detectionGroup);
+	QSlider *confidence = nullptr;
+	QWidget *confidenceSlider = makeIntSlider(
+		&dialog, 1, 100, 50,
+		[](int v) { return QString::number(v / 100.0, 'f', 2); },
+		confidence);
+	QSlider *maxRegions = nullptr;
+	QWidget *maxRegionsSlider = makeIntSlider(
+		&dialog, 1, 16, 4, [](int v) { return QString::number(v); },
+		maxRegions);
+	QSlider *padding = nullptr;
+	QWidget *paddingSlider = makeIntSlider(
+		&dialog, 0, 256, 32,
+		[](int v) { return MainWindow::tr("%1 px").arg(v); }, padding);
+	detectionForm->addRow(MainWindow::tr("Certainty"), confidenceSlider);
+	detectionForm->addRow(MainWindow::tr("Max regions"), maxRegionsSlider);
+	detectionForm->addRow(MainWindow::tr("Mask padding"), paddingSlider);
+	layout->addWidget(detectionGroup);
+
+	QGroupBox *generationGroup =
+		new QGroupBox(MainWindow::tr("Detail Generation"), &dialog);
+	QFormLayout *generationForm = new QFormLayout(generationGroup);
+	QSlider *denoise = nullptr;
+	QWidget *denoiseSlider = makeIntSlider(
+		&dialog, 5, 100, 35,
+		[](int v) { return QString::number(v / 100.0, 'f', 2); }, denoise);
+	QSlider *steps = nullptr;
+	QWidget *stepsSlider = makeIntSlider(
+		&dialog, 1, 200, 28, [](int v) { return QString::number(v); }, steps);
+	QCheckBox *inheritSampler =
+		new QCheckBox(MainWindow::tr("Use the inpaint sampler"), generationGroup);
+	QComboBox *scheduler = new QComboBox(generationGroup);
+	addSchedulerChoices(scheduler);
+	generationForm->addRow(MainWindow::tr("Denoise"), denoiseSlider);
+	generationForm->addRow(MainWindow::tr("Steps"), stepsSlider);
+	generationForm->addRow(QString(), inheritSampler);
+	generationForm->addRow(MainWindow::tr("Sampler"), scheduler);
+	layout->addWidget(generationGroup);
+
+	auto applyOptionsToControls = [&] (const DetailPassOptions &options) {
+		enabled->setChecked(options.enabled);
+		faces->setChecked(options.faceEnabled);
+		bodies->setChecked(options.bodyEnabled);
+		hands->setChecked(options.handsEnabled);
+		confidence->setValue(qRound(options.detectionConfidence * 100.0));
+		maxRegions->setValue(options.maxRegions);
+		padding->setValue(options.maskPaddingPx);
+		denoise->setValue(qRound(options.denoise * 100.0));
+		steps->setValue(options.steps);
+		inheritSampler->setChecked(options.inheritSampler);
+		selectScheduler(scheduler, options.scheduler);
+		scheduler->setEnabled(!options.inheritSampler);
+	};
+
+	QObject::connect(
+		inheritSampler, &QCheckBox::toggled, scheduler,
+		[scheduler](bool checked) { scheduler->setDisabled(checked); });
+	applyOptionsToControls(loadDetailPassOptions());
+
+	QDialogButtonBox *buttons = new QDialogButtonBox(
+		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+	QPushButton *defaultsButton = buttons->addButton(
+		MainWindow::tr("Restore Defaults"), QDialogButtonBox::ResetRole);
+	layout->addWidget(buttons);
+	QObject::connect(defaultsButton, &QPushButton::clicked, &dialog, [&] {
+		applyOptionsToControls(defaultDetailPassOptions());
+	});
+	QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+	if(dialog.exec() != QDialog::Accepted) {
+		return false;
+	}
+
+	DetailPassOptions options;
+	options.enabled = enabled->isChecked();
+	options.faceEnabled = faces->isChecked();
+	options.bodyEnabled = bodies->isChecked();
+	options.handsEnabled = hands->isChecked();
+	options.detectionConfidence = confidence->value() / 100.0;
+	options.maxRegions = maxRegions->value();
+	options.maskPaddingPx = padding->value();
+	options.denoise = denoise->value() / 100.0;
+	options.steps = steps->value();
+	options.inheritSampler = inheritSampler->isChecked();
+	options.scheduler = scheduler->currentData().toString();
+	saveDetailPassOptions(options);
+	return true;
+}
+
 QImage selectionMaskToInpaintMask(
 	const QImage &selectionMask, const QRect &selectionBounds,
 	const QRect &exportRegion)
@@ -4765,6 +5039,119 @@ QImage selectionMaskToInpaintMask(
 		}
 	}
 	return inpaintMask;
+}
+
+QRect transparentPixelBounds(const QImage &image, int alphaThreshold = 8)
+{
+	if(image.isNull()) {
+		return QRect();
+	}
+	const QImage source = image.convertToFormat(QImage::Format_ARGB32);
+	int left = source.width();
+	int top = source.height();
+	int right = -1;
+	int bottom = -1;
+	for(int y = 0; y < source.height(); ++y) {
+		const QRgb *line =
+			reinterpret_cast<const QRgb *>(source.constScanLine(y));
+		for(int x = 0; x < source.width(); ++x) {
+			if(qAlpha(line[x]) <= alphaThreshold) {
+				left = qMin(left, x);
+				top = qMin(top, y);
+				right = qMax(right, x);
+				bottom = qMax(bottom, y);
+			}
+		}
+	}
+	return right >= left && bottom >= top
+			   ? QRect(QPoint(left, top), QPoint(right, bottom))
+			   : QRect();
+}
+
+QImage transparentPixelsToOutpaintMask(
+	const QImage &image, const QRect &exportRegion, int alphaThreshold = 8,
+	int contextBleedPx = 0)
+{
+	QImage outpaintMask(exportRegion.size(), QImage::Format_Grayscale8);
+	outpaintMask.fill(0);
+	if(image.isNull() || exportRegion.isEmpty()) {
+		return outpaintMask;
+	}
+	const QImage source = image.convertToFormat(QImage::Format_ARGB32);
+	const QRect imageBounds(QPoint(), source.size());
+	const QRect clipped = exportRegion.intersected(imageBounds);
+	for(int canvasY = clipped.top(); canvasY <= clipped.bottom(); ++canvasY) {
+		const QRgb *sourceLine =
+			reinterpret_cast<const QRgb *>(source.constScanLine(canvasY));
+		uchar *out = outpaintMask.scanLine(canvasY - exportRegion.y());
+		for(int canvasX = clipped.left(); canvasX <= clipped.right(); ++canvasX) {
+			if(qAlpha(sourceLine[canvasX]) <= alphaThreshold) {
+				out[canvasX - exportRegion.x()] = 255;
+			}
+		}
+	}
+	if(contextBleedPx > 0) {
+		const int width = outpaintMask.width();
+		const int height = outpaintMask.height();
+		const int unreachable = width + height + contextBleedPx + 1;
+		QVector<int> distance(width * height, unreachable);
+		for(int y = 0; y < height; ++y) {
+			const uchar *line = outpaintMask.constScanLine(y);
+			for(int x = 0; x < width; ++x) {
+				if(line[x] == 255) {
+					distance[y * width + x] = 0;
+				}
+			}
+		}
+		for(int y = 0; y < height; ++y) {
+			for(int x = 0; x < width; ++x) {
+				int &value = distance[y * width + x];
+				if(x > 0) {
+					value = qMin(value, distance[y * width + x - 1] + 1);
+				}
+				if(y > 0) {
+					value = qMin(value, distance[(y - 1) * width + x] + 1);
+				}
+			}
+		}
+		for(int y = height - 1; y >= 0; --y) {
+			for(int x = width - 1; x >= 0; --x) {
+				int &value = distance[y * width + x];
+				if(x + 1 < width) {
+					value = qMin(value, distance[y * width + x + 1] + 1);
+				}
+				if(y + 1 < height) {
+					value = qMin(value, distance[(y + 1) * width + x] + 1);
+				}
+			}
+		}
+		for(int y = 0; y < height; ++y) {
+			uchar *line = outpaintMask.scanLine(y);
+			for(int x = 0; x < width; ++x) {
+				const int d = distance[y * width + x];
+				if(line[x] == 0 && d > 0 && d <= contextBleedPx) {
+					line[x] = uchar(qRound(
+						255.0 * double(contextBleedPx + 1 - d) /
+						double(contextBleedPx + 1)));
+				}
+			}
+		}
+	}
+	return outpaintMask;
+}
+
+bool maskHasEditablePixels(const QImage &mask)
+{
+	const QImage source = mask.convertToFormat(QImage::Format_Grayscale8);
+	for(int y = 0; y < source.height(); ++y) {
+		const uchar *line = source.constScanLine(y);
+		for(int x = 0; x < source.width(); ++x) {
+			if(line[x] != 0) {
+				return true;
+			}
+		}
+	}
+	return false;
 }
 
 QString underpaintToolPath(const QString &relativePath)
@@ -4811,9 +5198,9 @@ QString underpaintPythonPath()
 }
 
 QString improveInpaintPromptWithHelper(
-	const QRect &region, const QString &prompt, const QString &negativePrompt,
-	int candidateCount, int seed, double cfg, double denoise, int steps,
-	int edgeFeatherPx, QString &outError)
+	const QString &operation, const QRect &region, const QString &prompt,
+	const QString &negativePrompt, int candidateCount, int seed, double cfg,
+	double denoise, int steps, int edgeFeatherPx, QString &outError)
 {
 	const QString scriptPath =
 		QProcessEnvironment::systemEnvironment().value(
@@ -4826,7 +5213,7 @@ QString improveInpaintPromptWithHelper(
 	}
 
 	QJsonObject payload{
-		{QStringLiteral("operation"), QStringLiteral("inpaint-prompt-improve")},
+		{QStringLiteral("operation"), operation},
 		{QStringLiteral("prompt"), prompt},
 		{QStringLiteral("negativePrompt"), negativePrompt},
 		{QStringLiteral("candidateCount"), candidateCount},
@@ -4893,14 +5280,17 @@ QString improveInpaintPromptWithHelper(
 }
 
 bool showInpaintOptionsDialog(
-	QWidget *parent, const QRect &region, InpaintOptions &options)
+	QWidget *parent, const QRect &region, InpaintOptions &options,
+	const QString &windowTitle, const QString &regionLabelText,
+	const QString &promptPlaceholder, const QString &promptHelperOperation)
 {
 	QDialog dialog(parent);
-	dialog.setWindowTitle(MainWindow::tr("Inpaint"));
+	dialog.setWindowTitle(windowTitle);
 
 	QVBoxLayout *layout = new QVBoxLayout(&dialog);
 	QLabel *regionLabel = new QLabel(
-		MainWindow::tr("Selection: %1 x %2 px")
+		MainWindow::tr("%1: %2 x %3 px")
+			.arg(regionLabelText)
 			.arg(region.width())
 			.arg(region.height()),
 		&dialog);
@@ -4909,8 +5299,7 @@ bool showInpaintOptionsDialog(
 	QTextEdit *prompt = new QTextEdit(&dialog);
 	prompt->setAcceptRichText(false);
 	prompt->setPlainText(options.prompt);
-	prompt->setPlaceholderText(
-		MainWindow::tr("Describe what should appear in the selected area"));
+	prompt->setPlaceholderText(promptPlaceholder);
 	prompt->setMinimumHeight(90);
 
 	QLineEdit *negativePrompt = new QLineEdit(options.negativePrompt, &dialog);
@@ -4936,12 +5325,25 @@ bool showInpaintOptionsDialog(
 		[](int v) { return QString::number(v / 100.0, 'f', 2); }, denoise);
 	QSlider *steps = nullptr;
 	QWidget *stepsSlider = makeIntSlider(
-		&dialog, 1, 60, options.steps,
+		&dialog, 1, 200, options.steps,
 		[](int v) { return QString::number(v); }, steps);
 	QSlider *edgeFeather = nullptr;
 	QWidget *edgeFeatherSlider = makeIntSlider(
 		&dialog, 0, 128, options.edgeFeatherPx,
 		[](int v) { return MainWindow::tr("%1 px").arg(v); }, edgeFeather);
+
+	QComboBox *scheduler = new QComboBox(&dialog);
+	addSchedulerChoices(scheduler);
+	selectScheduler(scheduler, options.scheduler);
+
+	QCheckBox *detailPass = new QCheckBox(
+		MainWindow::tr("Run detail pass after generation"), &dialog);
+	detailPass->setChecked(options.detailPassEnabled);
+	detailPass->setToolTip(
+		MainWindow::tr("Uses the current Face & Body Detail Settings."));
+	QLabel *detailPassLabel =
+		new QLabel(detailPassSummary(loadDetailPassOptions()), &dialog);
+	detailPassLabel->setWordWrap(true);
 
 	QWidget *promptWidget = new QWidget(&dialog);
 	QHBoxLayout *promptLayout = new QHBoxLayout(promptWidget);
@@ -4959,12 +5361,13 @@ bool showInpaintOptionsDialog(
 	QObject::connect(
 		promptHelper, &QToolButton::clicked, &dialog,
 		[dialogParent, promptHelper, prompt, negativePrompt, candidateCount,
-		 seed, cfg, denoise, steps, edgeFeather, &region] {
+		 seed, cfg, denoise, steps, edgeFeather, &region,
+		 promptHelperOperation] {
 			QString error;
 			promptHelper->setEnabled(false);
 			utils::ScopedOverrideCursor cursor;
 			const QString improved = improveInpaintPromptWithHelper(
-				region, prompt->toPlainText().trimmed(),
+				promptHelperOperation, region, prompt->toPlainText().trimmed(),
 				negativePrompt->text().trimmed(), candidateCount->value(),
 				seed->value(), cfg->value() / 10.0, denoise->value() / 100.0,
 				steps->value(), edgeFeather->value(), error);
@@ -4985,8 +5388,11 @@ bool showInpaintOptionsDialog(
 	form->addRow(MainWindow::tr("Seed"), seed);
 	form->addRow(MainWindow::tr("CFG"), cfgSlider);
 	form->addRow(MainWindow::tr("Denoise"), denoiseSlider);
+	form->addRow(MainWindow::tr("Sampler"), scheduler);
 	form->addRow(MainWindow::tr("Steps"), stepsSlider);
 	form->addRow(MainWindow::tr("Edge feather"), edgeFeatherSlider);
+	form->addRow(QString(), detailPass);
+	form->addRow(MainWindow::tr("Detail settings"), detailPassLabel);
 	layout->addLayout(form);
 
 	QDialogButtonBox *buttons = new QDialogButtonBox(
@@ -5007,7 +5413,9 @@ bool showInpaintOptionsDialog(
 	options.seed = seed->value();
 	options.cfg = cfg->value() / 10.0;
 	options.denoise = denoise->value() / 100.0;
+	options.scheduler = scheduler->currentData().toString();
 	options.steps = steps->value();
+	options.detailPassEnabled = detailPass->isChecked();
 	options.edgeFeatherPx = edgeFeather->value();
 	return true;
 }
@@ -5089,12 +5497,18 @@ QString candidateDisplayLabel(const ai::JobCandidate &candidate)
 			   : MainWindow::tr("%1 - Seed %2").arg(label, seed);
 }
 
-QString candidateLayerLabel(const ai::JobCandidate &candidate)
+QString candidateLayerLabel(
+	const ai::JobCandidate &candidate, const QString &operationName)
 {
 	const QString seed = candidateSeedText(candidate);
 	return seed.isEmpty()
 			   ? candidateDisplayLabel(candidate)
-			   : MainWindow::tr("Inpaint %1").arg(seed);
+			   : MainWindow::tr("%1 %2").arg(operationName, seed);
+}
+
+QString candidateLayerLabel(const ai::JobCandidate &candidate)
+{
+	return candidateLayerLabel(candidate, MainWindow::tr("Inpaint"));
 }
 
 int validInpaintAnchorLayer(canvas::LayerListModel *layers, int preferredLayerId)
@@ -5134,6 +5548,12 @@ QString candidateDetailsText(
 	if(!model.isEmpty()) {
 		details += MainWindow::tr("\nModel: %1").arg(model);
 	}
+	const QString scheduler =
+		diagnostics.value(QStringLiteral("scheduler"))
+			.toString(provenance.value(QStringLiteral("scheduler")).toString());
+	if(!scheduler.isEmpty()) {
+		details += MainWindow::tr("\nSampler: %1").arg(scheduler);
+	}
 	const QString device = diagnostics.value(QStringLiteral("device")).toString();
 	if(!device.isEmpty()) {
 		details += MainWindow::tr("\nDevice: %1").arg(device);
@@ -5145,6 +5565,27 @@ QString candidateDetailsText(
 	if(diagnostics.contains(QStringLiteral("peakVramMb"))) {
 		details += MainWindow::tr("\nPeak VRAM: %1 MB")
 					   .arg(diagnostics.value(QStringLiteral("peakVramMb")).toInt());
+	}
+	const QJsonObject detailPass =
+		diagnostics.value(QStringLiteral("detailPass")).toObject();
+	if(!detailPass.isEmpty()) {
+		const QString status =
+			detailPass.value(QStringLiteral("status")).toString();
+		const QJsonArray regions =
+			detailPass.value(QStringLiteral("regions")).toArray();
+		QStringList regionNames;
+		for(const QJsonValue &region : regions) {
+			const QString name = region.toString();
+			if(!name.isEmpty()) {
+				regionNames.append(name);
+			}
+		}
+		details += MainWindow::tr("\nDetail pass: %1")
+					   .arg(status.isEmpty() ? MainWindow::tr("unknown") : status);
+		if(!regionNames.isEmpty()) {
+			details += MainWindow::tr(" (%1)")
+						   .arg(regionNames.join(QStringLiteral(", ")));
+		}
 	}
 	if(!jobResult.response.message.isEmpty()) {
 		details += MainWindow::tr("\nMessage: %1").arg(jobResult.response.message);
@@ -5160,15 +5601,15 @@ QString candidateDetailsText(
 
 bool showInpaintCandidateDialog(
 	QWidget *parent, canvas::CanvasModel *canvas,
-	const QVector<int> &importedLayerIds, const ai::JobRunResult &jobResult)
+	const QVector<int> &importedLayerIds, const ai::JobRunResult &jobResult,
+	const QString &windowTitle, const QString &introText)
 {
 	QDialog dialog(parent);
-	dialog.setWindowTitle(MainWindow::tr("Inpaint Candidates"));
+	dialog.setWindowTitle(windowTitle);
 	dialog.resize(760, 520);
 
 	QVBoxLayout *layout = new QVBoxLayout(&dialog);
-	QLabel *title = new QLabel(
-		MainWindow::tr("Choose the candidate to show on the canvas."), &dialog);
+	QLabel *title = new QLabel(introText, &dialog);
 	layout->addWidget(title);
 
 	QListWidget *list = new QListWidget(&dialog);
@@ -8195,6 +8636,10 @@ void MainWindow::setupActions()
 		makeAction("ai-outpaint", tr("&Outpaint..."))
 			.statusTip(tr("Generate content for an intentional canvas extension"))
 			.noDefaultShortcut();
+	QAction *aiDetailSettings =
+		makeAction("ai-detail-settings", tr("Face && Body Detail Settings..."))
+			.statusTip(tr("Configure targeted face, body, and hand detail passes"))
+			.noDefaultShortcut();
 	QAction *aiModelManager =
 		makeAction("ai-model-manager", tr("&Model Manager..."))
 			.statusTip(tr("Review local AI models and storage"))
@@ -8204,10 +8649,6 @@ void MainWindow::setupActions()
 			.statusTip(tr("Configure restoration defaults and candidate counts"))
 			.noDefaultShortcut();
 
-	auto showAiPlaceholder =
-		[this](const QString &title, const QString &message) {
-			QMessageBox::information(this, title, message);
-		};
 	connect(aiSceneSeparation, &QAction::triggered, this, [=] {
 		canvas::CanvasModel *canvas = m_doc->canvas();
 		if(!canvas) {
@@ -8513,9 +8954,13 @@ void MainWindow::setupActions()
 			canvas->layerlist(), m_doc->toolCtrl()->activeLayer());
 		static InpaintOptions lastInpaintSettings;
 		InpaintOptions options = lastInpaintSettings;
+		options.detailPassEnabled = loadDetailPassOptions().enabled;
 		options.prompt.clear();
 		options.negativePrompt.clear();
-		if(!showInpaintOptionsDialog(this, selectionRegion, options)) {
+		if(!showInpaintOptionsDialog(
+			   this, selectionRegion, options, tr("Inpaint"), tr("Selection"),
+			   tr("Describe what should appear in the selected area"),
+			   QStringLiteral("inpaint-prompt-improve"))) {
 			return;
 		}
 		lastInpaintSettings = options;
@@ -8563,16 +9008,19 @@ void MainWindow::setupActions()
 			{QStringLiteral("whiteMeans"), QStringLiteral("editable-region")},
 		};
 		request.inputs = {sourceAsset, maskAsset};
-		request.parameters = QJsonObject{
-			{QStringLiteral("prompt"), options.prompt},
-			{QStringLiteral("negativePrompt"), options.negativePrompt},
-			{QStringLiteral("seed"), options.seed},
-			{QStringLiteral("cfg"), options.cfg},
-			{QStringLiteral("denoise"), options.denoise},
-			{QStringLiteral("steps"), options.steps},
-			{QStringLiteral("candidateCount"), options.candidateCount},
-			{QStringLiteral("edgeFeatherPx"), options.edgeFeatherPx},
-		};
+			request.parameters = QJsonObject{
+				{QStringLiteral("prompt"), options.prompt},
+				{QStringLiteral("negativePrompt"), options.negativePrompt},
+				{QStringLiteral("seed"), options.seed},
+				{QStringLiteral("cfg"), options.cfg},
+				{QStringLiteral("denoise"), options.denoise},
+				{QStringLiteral("scheduler"), options.scheduler},
+				{QStringLiteral("steps"), options.steps},
+				{QStringLiteral("detailPass"),
+				 detailPassParameters(options.detailPassEnabled, options.scheduler)},
+				{QStringLiteral("candidateCount"), options.candidateCount},
+				{QStringLiteral("edgeFeatherPx"), options.edgeFeatherPx},
+			};
 		request.preferences = QJsonObject{
 			{QStringLiteral("maxRenderEdge"), 1024},
 			{QStringLiteral("variantMode"), QStringLiteral("sequential")},
@@ -8737,7 +9185,7 @@ void MainWindow::setupActions()
 			messages.append(net::makeUndoPointMessage(contextId));
 			messages.append(
 				net::makeLayerTreeCreateMessage(
-					contextId, groupId, 0, qMax(0, sourceLayerId), 0,
+					contextId, groupId, 0, 0, 0,
 					DP_MSG_LAYER_TREE_CREATE_FLAGS_GROUP,
 					layers->getAvailableLayerName(
 						tr("Inpaint Candidates"))));
@@ -8784,7 +9232,9 @@ void MainWindow::setupActions()
 			ai::JobRunResult importedJobResult = jobResult;
 			importedJobResult.response.candidates = importedCandidates;
 			const bool accepted = showInpaintCandidateDialog(
-				this, currentCanvas, importedLayerIds, importedJobResult);
+				this, currentCanvas, importedLayerIds, importedJobResult,
+				tr("Inpaint Candidates"),
+				tr("Choose the candidate to show on the canvas."));
 			if(!accepted) {
 				net::MessageList deleteMessages;
 				deleteMessages.append(net::makeUndoPointMessage(contextId));
@@ -8800,11 +9250,386 @@ void MainWindow::setupActions()
 		thread->start();
 	});
 	connect(aiOutpaint, &QAction::triggered, this, [=] {
-		showAiPlaceholder(
-			tr("Outpaint"),
-			tr("Outpaint will be a user-initiated region operation for "
-			   "extending the canvas, not an automatic side effect of canvas "
-			   "resize."));
+		canvas::CanvasModel *canvas = m_doc->canvas();
+		if(!canvas) {
+			showErrorMessage(tr("No canvas is available for outpaint."));
+			return;
+		}
+		if(!m_doc->checkPermission(DP_FEATURE_PUT_IMAGE)) {
+			return;
+		}
+		canvas::AclState *aclState = canvas->aclState();
+		if(!aclState ||
+		   !(aclState->canUseFeature(DP_FEATURE_EDIT_LAYERS) ||
+			 aclState->canUseFeature(DP_FEATURE_OWN_LAYERS))) {
+			m_doc->permissionDenied(DP_FEATURE_EDIT_LAYERS);
+			return;
+		}
+
+		drawdance::CanvasState canvasState =
+			canvas->paintEngine()->viewCanvasState();
+		const QRect canvasBounds(QPoint(), canvasState.size());
+		if(canvasBounds.isEmpty()) {
+			showErrorMessage(tr("The canvas is empty."));
+			return;
+		}
+
+		canvas::SelectionModel *selection = canvas->selection();
+		const int contextPadding = 128;
+		const int contextBleedPx = 64;
+		QRect targetRegion;
+		QRect exportRegion;
+		QImage mask;
+		QString selectionSource;
+		if(selection && selection->isValid()) {
+			targetRegion = canvasBounds.intersected(selection->bounds());
+			if(targetRegion.isEmpty()) {
+				showErrorMessage(tr("The selected outpaint area is empty."));
+				return;
+			}
+			exportRegion = targetRegion
+							   .adjusted(
+								   -contextPadding, -contextPadding,
+								   contextPadding, contextPadding)
+							   .intersected(canvasBounds);
+			mask = selectionMaskToInpaintMask(
+				selection->image(), targetRegion, exportRegion);
+			selectionSource = QStringLiteral("current-selection");
+		} else {
+			const QImage alphaImage =
+				canvas->paintEngine()->getLayerImage(-1, canvasBounds);
+			targetRegion = transparentPixelBounds(alphaImage);
+			if(targetRegion.isEmpty()) {
+				showErrorMessage(
+					tr("Expand the canvas to create transparent space, or "
+					   "select an edge region to outpaint."));
+				return;
+			}
+			exportRegion = targetRegion
+							   .adjusted(
+								   -contextPadding, -contextPadding,
+								   contextPadding, contextPadding)
+							   .intersected(canvasBounds);
+			mask = transparentPixelsToOutpaintMask(
+				alphaImage, exportRegion, 8, contextBleedPx);
+			selectionSource = QStringLiteral("transparent-canvas");
+		}
+		if(exportRegion.isEmpty()) {
+			showErrorMessage(tr("The outpaint region is empty."));
+			return;
+		}
+		if(mask.isNull() || !maskHasEditablePixels(mask)) {
+			showErrorMessage(tr("Could not export an editable outpaint mask."));
+			return;
+		}
+
+		const int sourceLayerId = validInpaintAnchorLayer(
+			canvas->layerlist(), m_doc->toolCtrl()->activeLayer());
+		static InpaintOptions lastOutpaintSettings;
+		static bool lastOutpaintSettingsInitialized = false;
+		InpaintOptions options = lastOutpaintSettings;
+			if(!lastOutpaintSettingsInitialized) {
+				options.denoise = 0.9;
+			}
+			options.detailPassEnabled = loadDetailPassOptions().enabled;
+			options.prompt.clear();
+			options.negativePrompt.clear();
+		if(!showInpaintOptionsDialog(
+			   this, targetRegion, options, tr("Outpaint"),
+			   tr("Outpaint region"),
+			   tr("Describe what should appear in the expanded area"),
+			   QStringLiteral("outpaint-prompt-improve"))) {
+			return;
+		}
+		lastOutpaintSettings = options;
+		lastOutpaintSettingsInitialized = true;
+		lastOutpaintSettings.prompt.clear();
+		lastOutpaintSettings.negativePrompt.clear();
+
+		drawdance::ViewModeBuffer viewModeBuffer;
+		QImage sourceImage = canvas->paintEngine()->getFlatImage(
+			viewModeBuffer, canvasState, false, true, &exportRegion);
+		if(sourceImage.isNull()) {
+			showErrorMessage(tr("Could not export the source image for AI."));
+			return;
+		}
+
+		QTemporaryDir assetDir(
+			QDir::temp().filePath(QStringLiteral("underpaint-ai-assets-XXXXXX")));
+		if(!assetDir.isValid()) {
+			showErrorMessage(tr("Could not create AI asset directory."));
+			return;
+		}
+		assetDir.setAutoRemove(false);
+		const QString sourcePath =
+			QDir(assetDir.path()).filePath(QStringLiteral("source.png"));
+		const QString maskPath =
+			QDir(assetDir.path()).filePath(QStringLiteral("mask.png"));
+		if(!sourceImage.save(sourcePath, "PNG") || !mask.save(maskPath, "PNG")) {
+			showErrorMessage(tr("Could not write AI source assets."));
+			return;
+		}
+
+		ai::JobRequest request =
+			ai::JobRequest::create(ai::Operation::Outpaint);
+		ai::JobAsset sourceAsset;
+		sourceAsset.role = QStringLiteral("source-image");
+		sourceAsset.path = sourcePath;
+		sourceAsset.mimeType = QStringLiteral("image/png");
+		sourceAsset.metadata = QJsonObject{
+			{QStringLiteral("colorSpace"), QStringLiteral("srgb")},
+		};
+		ai::JobAsset maskAsset;
+		maskAsset.role = QStringLiteral("mask");
+		maskAsset.path = maskPath;
+		maskAsset.mimeType = QStringLiteral("image/png");
+		maskAsset.metadata = QJsonObject{
+			{QStringLiteral("whiteMeans"), QStringLiteral("editable-region")},
+		};
+		request.inputs = {sourceAsset, maskAsset};
+			request.parameters = QJsonObject{
+				{QStringLiteral("prompt"), options.prompt},
+				{QStringLiteral("negativePrompt"), options.negativePrompt},
+				{QStringLiteral("seed"), options.seed},
+				{QStringLiteral("cfg"), options.cfg},
+				{QStringLiteral("denoise"), options.denoise},
+				{QStringLiteral("scheduler"), options.scheduler},
+				{QStringLiteral("steps"), options.steps},
+				{QStringLiteral("detailPass"),
+				 detailPassParameters(options.detailPassEnabled, options.scheduler)},
+				{QStringLiteral("candidateCount"), options.candidateCount},
+				{QStringLiteral("edgeFeatherPx"), options.edgeFeatherPx},
+				{QStringLiteral("contextBleedPx"), contextBleedPx},
+				{QStringLiteral("prefillNoise"), 0.42},
+			};
+		request.preferences = QJsonObject{
+			{QStringLiteral("maxRenderEdge"), 1024},
+			{QStringLiteral("variantMode"), QStringLiteral("sequential")},
+			{QStringLiteral("unloadPolicy"), QStringLiteral("idle")},
+			{QStringLiteral("vaeTiling"), true},
+			{QStringLiteral("cacheGuides"), true},
+			{QStringLiteral("safe4070Mode"), true},
+		};
+		request.region = QJsonObject{
+			{QStringLiteral("x"), exportRegion.x()},
+			{QStringLiteral("y"), exportRegion.y()},
+			{QStringLiteral("width"), exportRegion.width()},
+			{QStringLiteral("height"), exportRegion.height()},
+			{QStringLiteral("selectionX"), targetRegion.x()},
+			{QStringLiteral("selectionY"), targetRegion.y()},
+			{QStringLiteral("selectionWidth"), targetRegion.width()},
+			{QStringLiteral("selectionHeight"), targetRegion.height()},
+			{QStringLiteral("contextPadding"), contextPadding},
+		};
+		request.source = QJsonObject{
+			{QStringLiteral("activeLayerId"), sourceLayerId},
+			{QStringLiteral("selectionSource"), selectionSource},
+		};
+		request.provenance = QJsonObject{
+			{QStringLiteral("createdBy"), QStringLiteral("underpaint")},
+			{QStringLiteral("uiEntryPoint"), QStringLiteral("AI/Outpaint")},
+		};
+
+		QProgressDialog *progress = new QProgressDialog(
+			tr("Loading AI model and generating outpaint candidates..."),
+			QString(), 0, qMax(1, options.candidateCount * options.steps),
+			this);
+		AiPreviewLabel *progressLabel = new AiPreviewLabel(progress);
+		progressLabel->setText(
+			tr("Loading AI model and generating outpaint candidates..."));
+		progressLabel->setAlignment(Qt::AlignCenter);
+		progressLabel->setMinimumWidth(280);
+		progressLabel->setMinimumHeight(192);
+		progress->setLabel(progressLabel);
+		progress->setWindowTitle(tr("Outpaint"));
+		progress->setWindowModality(Qt::WindowModal);
+		progress->setMinimumDuration(0);
+		progress->setAutoClose(false);
+		progress->setAutoReset(false);
+		progress->setValue(0);
+		progress->show();
+
+		ai::JobRunResult *result = new ai::JobRunResult;
+		QPointer<AiPreviewLabel> progressLabelPointer(progressLabel);
+		QPointer<QProgressDialog> progressPointer(progress);
+		const int progressSteps = qMax(1, options.steps);
+		const int progressCandidates = qMax(1, options.candidateCount);
+		QThread *thread = QThread::create(
+			[request, result, progressLabelPointer, progressPointer,
+			 progressSteps, progressCandidates] {
+			*result = ai::JobRunner::run(
+				request, QString(), 15 * 60 * 1000,
+				[progressLabelPointer, progressPointer, progressSteps,
+				 progressCandidates](const QJsonObject &event) {
+					QMetaObject::invokeMethod(
+						qApp,
+						[progressLabelPointer, progressPointer, progressSteps,
+						 progressCandidates, event] {
+							if(!progressLabelPointer || !progressPointer) {
+								return;
+							}
+							const QString type =
+								event.value(QStringLiteral("type")).toString();
+							if(type != QStringLiteral("preview") &&
+							   type != QStringLiteral("candidate")) {
+								return;
+							}
+							const QString imagePath =
+								event.value(QStringLiteral("imagePath")).toString();
+							QPixmap preview(imagePath);
+							if(preview.isNull()) {
+								return;
+							}
+							const int candidate =
+								event.value(QStringLiteral("candidate")).toInt();
+							const int step = event.value(QStringLiteral("step")).toInt();
+							const int steps =
+								event.value(QStringLiteral("steps")).toInt();
+							const int seed =
+								event.value(QStringLiteral("seed")).toInt(-1);
+							QString text =
+								type == QStringLiteral("preview")
+									? MainWindow::tr("Candidate %1 preview")
+										  .arg(candidate)
+									: MainWindow::tr("Candidate %1 complete")
+										  .arg(candidate);
+							if(step > 0 && steps > 0) {
+								text += MainWindow::tr(" - step %1/%2")
+											.arg(step)
+											.arg(steps);
+							}
+							if(seed >= 0) {
+								text += MainWindow::tr(" - seed %1").arg(seed);
+							}
+							progressLabelPointer->setToolTip(text);
+							progressLabelPointer->setPreviewPixmap(preview.scaled(
+								256, 192, Qt::KeepAspectRatio,
+								Qt::SmoothTransformation));
+							const int candidateIndex = qMax(1, candidate);
+							int progressValue = 0;
+							if(type == QStringLiteral("preview")) {
+								const int stepCount =
+									steps > 0 ? steps : progressSteps;
+								progressValue =
+									(candidateIndex - 1) * progressSteps +
+									qMin(qMax(1, step), stepCount);
+							} else {
+								progressValue = candidateIndex * progressSteps;
+							}
+							progressPointer->setMaximum(
+								qMax(1, progressCandidates * progressSteps));
+							progressPointer->setValue(qMin(
+								progressValue, progressPointer->maximum()));
+						},
+						Qt::QueuedConnection);
+				});
+		});
+		connect(thread, &QThread::finished, this, [=] {
+			progress->close();
+			progress->deleteLater();
+
+			const ai::JobRunResult jobResult = *result;
+			delete result;
+			thread->deleteLater();
+
+			canvas::CanvasModel *currentCanvas = m_doc->canvas();
+			if(!currentCanvas) {
+				showErrorMessage(
+					tr("The canvas was closed before AI results could import."));
+				return;
+			}
+			if(!jobResult.ok) {
+				showErrorMessageWithDetails(
+					tr("Outpaint worker failed."), jobResult.errorMessage);
+				return;
+			}
+			if(jobResult.response.candidates.isEmpty()) {
+				showErrorMessage(tr("The AI worker returned no candidates."));
+				return;
+			}
+
+			canvas::LayerListModel *layers = currentCanvas->layerlist();
+			const int candidateCount = jobResult.response.candidates.size();
+			QVector<int> layerIds =
+				layers->getAvailableLayerIds(candidateCount + 1);
+			if(layerIds.size() < candidateCount + 1) {
+				showErrorMessage(
+					tr("Could not allocate layers for AI candidates."));
+				return;
+			}
+
+			const uint8_t contextId = currentCanvas->localUserId();
+			const int groupId = layerIds.first();
+			net::MessageList messages;
+			messages.append(net::makeUndoPointMessage(contextId));
+			messages.append(
+				net::makeLayerTreeCreateMessage(
+					contextId, groupId, 0, 0, 0,
+					DP_MSG_LAYER_TREE_CREATE_FLAGS_GROUP,
+					layers->getAvailableLayerName(
+						tr("Outpaint Candidates"))));
+
+			QVector<int> importedLayerIds;
+			importedLayerIds.reserve(candidateCount);
+			QVector<ai::JobCandidate> importedCandidates;
+			importedCandidates.reserve(candidateCount);
+			for(int i = 0; i < candidateCount; ++i) {
+				const ai::JobCandidate &candidate =
+					jobResult.response.candidates.at(i);
+				QImage image(candidate.imagePath);
+				if(image.isNull()) {
+					continue;
+				}
+				const int layerId = layerIds.at(i + 1);
+				importedLayerIds.append(layerId);
+				importedCandidates.append(candidate);
+				messages.append(
+					net::makeLayerTreeCreateMessage(
+						contextId, layerId, 0, groupId, 0,
+						DP_MSG_LAYER_TREE_CREATE_FLAGS_INTO,
+						layers->getAvailableLayerName(
+							candidateLayerLabel(candidate, tr("Outpaint")))));
+				net::makePutImageMessagesCompat(
+					messages, contextId, layerId, DP_BLEND_MODE_NORMAL,
+					exportRegion.x(), exportRegion.y(), image,
+					currentCanvas->isCompatibilityMode());
+			}
+
+			if(importedLayerIds.isEmpty()) {
+				showErrorMessage(
+					tr("The AI worker returned unreadable candidates."));
+				return;
+			}
+
+			layers->setLayerIdToSelect(importedLayerIds.first());
+			m_doc->client()->sendCommands(messages.size(), messages.constData());
+			for(int i = 1; i < importedLayerIds.size(); ++i) {
+				currentCanvas->paintEngine()->setLayerVisibility(
+					importedLayerIds.at(i), true);
+			}
+
+			ai::JobRunResult importedJobResult = jobResult;
+			importedJobResult.response.candidates = importedCandidates;
+			const bool accepted = showInpaintCandidateDialog(
+				this, currentCanvas, importedLayerIds, importedJobResult,
+				tr("Outpaint Candidates"),
+				tr("Choose the outpaint candidate to show on the canvas."));
+			if(!accepted) {
+				net::MessageList deleteMessages;
+				deleteMessages.append(net::makeUndoPointMessage(contextId));
+				deleteMessages.append(
+					net::makeLayerTreeDeleteMessage(contextId, groupId, 0));
+				m_doc->client()->sendCommands(
+					deleteMessages.size(), deleteMessages.constData());
+			}
+			if(sourceLayerId > 0) {
+				m_dockLayers->selectLayer(sourceLayerId);
+			}
+		});
+		thread->start();
+	});
+	connect(aiDetailSettings, &QAction::triggered, this, [=] {
+		showDetailPassSettingsDialog(this);
 	});
 	connect(aiModelManager, &QAction::triggered, this, [=] {
 		QString objectName = QStringLiteral("aimodelmanagerdialog");
@@ -8836,6 +9661,7 @@ void MainWindow::setupActions()
 	aiMenu->addAction(aiInpaint);
 	aiMenu->addAction(aiOutpaint);
 	aiMenu->addSeparator();
+	aiMenu->addAction(aiDetailSettings);
 	aiMenu->addAction(aiModelManager);
 	aiMenu->addAction(aiPreferences);
 

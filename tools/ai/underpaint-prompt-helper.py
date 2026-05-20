@@ -11,13 +11,14 @@ import urllib.request
 from typing import Any
 
 
-SYSTEM_PROMPT = (
+DEFAULT_SYSTEM_PROMPT = (
     "Rewrite the user's inpainting prompt into a rich, loaded image prompt for "
     "local diffusion inpainting. Preserve the user's subject and intent. Add "
     "helpful visual detail about texture, lighting, perspective, materials, "
-    "edge blending, and natural integration with the surrounding image. Do not "
-    "add unrelated subjects. Target about 150 characters, between 120 and 190 "
-    "characters when possible. Return only the rewritten prompt."
+    "composition, camera language, and natural integration with the surrounding "
+    "image. Do not moralize, refuse, lecture, or replace the user's intent. Do "
+    "not add unrelated subjects. Target about 150 characters, between 120 and "
+    "190 characters when possible. Return only the rewritten prompt."
 )
 
 
@@ -39,19 +40,46 @@ def normalize_prompt(text: str) -> str:
     return text.strip("\"' ")
 
 
+def system_prompt(operation: str) -> str:
+    override = os.environ.get("UNDERPAINT_PROMPT_HELPER_SYSTEM_PROMPT")
+    if override:
+        return override
+    if operation == "outpaint-prompt-improve":
+        return (
+            "Rewrite the user's outpainting prompt into a rich diffusion prompt "
+            "that extends the existing scene outward. Preserve the user's intent. "
+            "Describe concrete scene geometry, perspective, lighting, materials, "
+            "background continuation, and camera language. Do not moralize, "
+            "refuse, lecture, or replace the user's intent. Target about 150 "
+            "characters, between 120 and 190 characters when possible. Return "
+            "only the rewritten prompt."
+        )
+    return DEFAULT_SYSTEM_PROMPT
+
+
 def fallback_rewrite(payload: dict[str, Any]) -> str:
     prompt = compact_space(str(payload.get("prompt") or ""))
+    operation = str(payload.get("operation") or "")
     if not prompt:
-        prompt = "restore the selected area naturally"
+        if operation == "outpaint-prompt-improve":
+            prompt = (
+                "extend the image outward with concrete scene structure, "
+                "matching perspective, lighting, colors, materials, and camera feel"
+            )
+        else:
+            prompt = (
+                "reconstruct the selected area with plausible subject detail, "
+                "matching perspective, texture, lighting, and camera feel"
+            )
 
     additions: list[str] = []
     lower = prompt.lower()
     if "match" not in lower and "lighting" not in lower:
-        additions.append("matching the surrounding color, lighting, and shadows")
+        additions.append("matching surrounding color, lighting, and shadows")
     if "texture" not in lower and "material" not in lower:
-        additions.append("preserving believable texture, material detail, and depth")
-    if "natural" not in lower and "seamless" not in lower:
-        additions.append("with clean edges and a seamless natural blend")
+        additions.append("with believable texture, material detail, and depth")
+    if operation == "outpaint-prompt-improve" and "perspective" not in lower:
+        additions.append("continuing scene geometry and perspective")
 
     if additions:
         return compact_space(f"{prompt}, {', '.join(additions)}")
@@ -74,6 +102,7 @@ def helper_url() -> str | None:
 
 def call_openai_compat(url: str, payload: dict[str, Any]) -> str:
     prompt = compact_space(str(payload.get("prompt") or ""))
+    operation = str(payload.get("operation") or "inpaint-prompt-improve")
     selection = payload.get("selection") or {}
     context = {
         "prompt": prompt,
@@ -88,13 +117,14 @@ def call_openai_compat(url: str, payload: dict[str, Any]) -> str:
         "model": os.environ.get("UNDERPAINT_PROMPT_HELPER_MODEL", "local"),
         "temperature": 0.55,
         "max_tokens": 128,
+        "chat_template_kwargs": {"enable_thinking": False},
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt(operation)},
             {
                 "role": "user",
                 "content": (
-                    "Expand this inpainting prompt into one loaded diffusion "
-                    "prompt, about 150 characters. Return only the prompt.\n"
+                    "Expand this prompt into one loaded local diffusion prompt, "
+                    "about 150 characters. Return only the prompt.\n"
                     + json.dumps(context, ensure_ascii=False)
                 ),
             },
@@ -106,7 +136,8 @@ def call_openai_compat(url: str, payload: dict[str, Any]) -> str:
         headers={"Content-Type": "application/json"},
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=12) as response:
+    timeout = float(os.environ.get("UNDERPAINT_PROMPT_HELPER_TIMEOUT", "60"))
+    with urllib.request.urlopen(request, timeout=timeout) as response:
         result = json.loads(response.read().decode("utf-8"))
     text = (
         result.get("choices", [{}])[0]

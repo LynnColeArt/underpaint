@@ -3,11 +3,18 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 UNDERPAINT_HOME="${UNDERPAINT_HOME:-$HOME/.underpaint}"
-MODEL_DIR="${UNDERPAINT_PROMPT_HELPER_MODEL_DIR:-$UNDERPAINT_HOME/models/prompt/qwen3.5-4b-gguf}"
+MODEL_DIR="${UNDERPAINT_PROMPT_HELPER_MODEL_DIR:-$UNDERPAINT_HOME/models/prompt/qwen3.5-4b-abliterated-gguf}"
+PROJECTOR_DIR="${UNDERPAINT_PROMPT_HELPER_PROJECTOR_DIR:-$UNDERPAINT_HOME/models/prompt/qwen3.5-4b-gguf}"
 LLAMA_SERVER="${QWENCH_LLAMA_SERVER:-$HOME/.qwench/runtime/bin/llama-server}"
-DEFAULT_MODEL_PATH="$MODEL_DIR/Qwen3.5-4B-UD-Q4_K_XL.gguf"
+DEFAULT_MODEL_PATH="$MODEL_DIR/Qwen3.5-4B-abliterated.Q4_K_M.gguf"
 if [[ ! -f "$DEFAULT_MODEL_PATH" ]]; then
-	DEFAULT_MODEL_PATH="$MODEL_DIR/Qwen3.5-4B-Q4_K_M.gguf"
+	DEFAULT_MODEL_PATH="$MODEL_DIR/Qwen3.5-4B-abliterated.IQ4_XS.gguf"
+fi
+if [[ ! -f "$DEFAULT_MODEL_PATH" ]]; then
+	DEFAULT_MODEL_PATH="$UNDERPAINT_HOME/models/prompt/qwen3.5-4b-gguf/Qwen3.5-4B-UD-Q4_K_XL.gguf"
+fi
+if [[ ! -f "$DEFAULT_MODEL_PATH" ]]; then
+	DEFAULT_MODEL_PATH="$UNDERPAINT_HOME/models/prompt/qwen3.5-4b-gguf/Qwen3.5-4B-Q4_K_M.gguf"
 fi
 if [[ ! -f "$DEFAULT_MODEL_PATH" ]]; then
 	DEFAULT_MODEL_PATH="$HOME/.qwench/models/qwen3-4b-instruct-q4_k_m.gguf"
@@ -17,6 +24,9 @@ if [[ ! -f "$DEFAULT_MODEL_PATH" ]]; then
 fi
 MODEL_PATH="${UNDERPAINT_PROMPT_HELPER_MODEL_PATH:-$DEFAULT_MODEL_PATH}"
 DEFAULT_MMPROJ_PATH="$MODEL_DIR/mmproj-F16.gguf"
+if [[ ! -f "$DEFAULT_MMPROJ_PATH" ]]; then
+	DEFAULT_MMPROJ_PATH="$PROJECTOR_DIR/mmproj-F16.gguf"
+fi
 if [[ ! -f "$DEFAULT_MMPROJ_PATH" ]]; then
 	DEFAULT_MMPROJ_PATH="$HOME/.qwench/models/mmproj-Qwen_Qwen3.5-9B-f16.gguf"
 fi
@@ -45,16 +55,22 @@ args=(
 	--port "$PORT"
 	--ctx-size "$CTX_SIZE"
 	--gpu-layers "$GPU_LAYERS"
+	--reasoning-budget 0
+	--no-warmup
 )
 
-if [[ "${UNDERPAINT_PROMPT_HELPER_DISABLE_MMPROJ:-0}" != "1" && -f "$MMPROJ_PATH" ]]; then
+if [[ "${UNDERPAINT_PROMPT_HELPER_ENABLE_MMPROJ:-0}" == "1" && -f "$MMPROJ_PATH" ]]; then
 	args+=(--mmproj "$MMPROJ_PATH")
+else
+	args+=(--no-mmproj)
 fi
 
 echo "Starting Underpaint prompt helper at http://$HOST:$PORT/v1"
 echo "Model: $MODEL_PATH"
 if [[ "${args[*]}" == *"--mmproj"* ]]; then
 	echo "Projector: $MMPROJ_PATH"
+else
+	echo "Projector: disabled for prompt helper text mode"
 fi
 echo
 echo "Use with:"

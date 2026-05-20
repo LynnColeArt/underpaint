@@ -19,6 +19,125 @@ SCHEMA = "underpaint.ai-job.v1"
 DEFAULT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 
 
+def normalize_scheduler_name(value: Any) -> str:
+    return str(value or "euler").strip().lower().replace("_", "-").replace(" ", "-")
+
+
+def apply_scheduler(
+    pipe: Any,
+    scheduler_name: str,
+    euler_discrete_scheduler: Any,
+    euler_ancestral_discrete_scheduler: Any,
+    dpm_solver_multistep_scheduler: Any,
+) -> tuple[str, str]:
+    normalized = normalize_scheduler_name(scheduler_name)
+    config = pipe.scheduler.config
+    if normalized in ("euler", "euler-discrete", "eulerdiscrete"):
+        pipe.scheduler = euler_discrete_scheduler.from_config(config)
+        return "euler", pipe.scheduler.__class__.__name__
+    if normalized in (
+        "euler-a",
+        "euler-ancestral",
+        "euler-ancestral-discrete",
+        "eulera",
+    ):
+        pipe.scheduler = euler_ancestral_discrete_scheduler.from_config(config)
+        return "euler-a", pipe.scheduler.__class__.__name__
+    if normalized in (
+        "dpm",
+        "dpmpp",
+        "dpmpp-3m",
+        "dpm++",
+        "dpm++-3m",
+        "dpmpp-2m",
+        "dpm++-2m",
+    ):
+        pipe.scheduler = dpm_solver_multistep_scheduler.from_config(
+            config,
+            algorithm_type="dpmsolver++",
+            solver_order=3,
+            use_karras_sigmas=False,
+        )
+        return "dpmpp-3m", pipe.scheduler.__class__.__name__
+    if normalized in (
+        "dpm-karras",
+        "dpmpp-karras",
+        "dpmpp-3m-karras",
+        "dpm++-karras",
+        "dpm++-3m-karras",
+        "dpmpp-2m-karras",
+        "dpm++-2m-karras",
+    ):
+        pipe.scheduler = dpm_solver_multistep_scheduler.from_config(
+            config,
+            algorithm_type="dpmsolver++",
+            solver_order=3,
+            use_karras_sigmas=True,
+        )
+        return "dpmpp-3m-karras", pipe.scheduler.__class__.__name__
+    raise ValueError(
+        "Unsupported scheduler "
+        f"{scheduler_name!r}. Expected euler, euler-a, dpmpp-3m, "
+        "or dpmpp-3m-karras."
+    )
+
+
+def normalized_detail_pass(parameters: dict[str, Any]) -> dict[str, Any]:
+    raw = parameters.get("detailPass", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    enabled = bool(raw.get("enabled", False))
+    return {
+        "enabled": enabled,
+        "faceEnabled": bool(raw.get("faceEnabled", True)),
+        "bodyEnabled": bool(raw.get("bodyEnabled", False)),
+        "handsEnabled": bool(raw.get("handsEnabled", False)),
+        "detectionConfidence": max(
+            0.01, min(float(raw.get("detectionConfidence", 0.5)), 1.0)
+        ),
+        "maxRegions": max(1, min(int(raw.get("maxRegions", 4)), 16)),
+        "maskPaddingPx": max(0, min(int(raw.get("maskPaddingPx", 32)), 256)),
+        "denoise": max(0.05, min(float(raw.get("denoise", 0.35)), 1.0)),
+        "steps": max(1, min(int(raw.get("steps", 28)), 200)),
+        "scheduler": normalize_scheduler_name(raw.get("scheduler", "euler")),
+    }
+
+
+def detail_pass_diagnostics(detail_pass: dict[str, Any]) -> dict[str, Any]:
+    enabled_regions = [
+        name
+        for name, enabled in (
+            ("face", detail_pass["faceEnabled"]),
+            ("body", detail_pass["bodyEnabled"]),
+            ("hands", detail_pass["handsEnabled"]),
+        )
+        if enabled
+    ]
+    diagnostics = {
+        "enabled": detail_pass["enabled"],
+        "regions": enabled_regions,
+        "detectionConfidence": detail_pass["detectionConfidence"],
+        "maxRegions": detail_pass["maxRegions"],
+        "maskPaddingPx": detail_pass["maskPaddingPx"],
+        "denoise": detail_pass["denoise"],
+        "steps": detail_pass["steps"],
+        "scheduler": detail_pass["scheduler"],
+        "detectedRegions": 0,
+        "appliedRegions": 0,
+    }
+    if not detail_pass["enabled"]:
+        diagnostics["status"] = "disabled"
+    elif not enabled_regions:
+        diagnostics["status"] = "no-regions-enabled"
+    else:
+        diagnostics["status"] = "detector-backend-unavailable"
+        diagnostics["message"] = (
+            "Detail pass was requested, but no face/body detector backend is "
+            "configured in this worker build yet."
+        )
+    return diagnostics
+
+
 def write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
@@ -314,6 +433,107 @@ def pad_mask_to_size(mask: Image.Image, size: tuple[int, int]) -> Image.Image:
     return padded
 
 
+def average_color(image: Image.Image, alpha: Image.Image) -> tuple[int, int, int]:
+    alpha_bbox = alpha.getbbox()
+    if alpha_bbox is None:
+        return (0, 0, 0)
+
+    small_rgb = image.crop(alpha_bbox).resize((1, 1), Image.Resampling.BOX)
+    return small_rgb.getpixel((0, 0))
+
+
+def stretched_color_field(source: Image.Image, alpha: Image.Image) -> Image.Image:
+    source_rgb = source.convert("RGB")
+    alpha = alpha.convert("L").point(lambda pixel: 255 if pixel > 8 else 0)
+    content_bbox = alpha.getbbox()
+    if content_bbox is None:
+        return source_rgb
+
+    width, height = source_rgb.size
+    base = Image.new("RGB", source_rgb.size, average_color(source_rgb, alpha))
+    base.paste(source_rgb, (0, 0), alpha)
+
+    content = base.crop(content_bbox)
+    color_field = content.resize(source_rgb.size, Image.Resampling.BICUBIC)
+    blur_radius = max(16, round(max(width, height) * 0.09))
+    blurred = color_field.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    return Image.blend(color_field, blurred, 0.92)
+
+
+def prefill_outpaint_source(
+    source: Image.Image, mask: Image.Image, prefill_noise: float = 0.42
+) -> Image.Image:
+    """Give outpaint models a plausible continuation under the editable mask."""
+    source_rgb = source.convert("RGB")
+    source_alpha = source.getchannel("A") if "A" in source.getbands() else None
+    mask = mask.convert("L").point(lambda pixel: 255 if pixel > 8 else 0)
+    bbox = mask.getbbox()
+    if bbox is None:
+        return source_rgb
+
+    width, height = source_rgb.size
+    left, top, right, bottom = bbox
+    fill = source_rgb.copy()
+    if source_alpha is not None:
+        guide = stretched_color_field(source, source_alpha)
+        fill.paste(guide, (0, 0), mask)
+    did_edge_fill = False
+
+    if left == 0 and right < width:
+        fill_width = right
+        edge = source_rgb.crop((right, 0, right + 1, height))
+        fill.paste(
+            edge.resize((fill_width, height), Image.Resampling.NEAREST),
+            (0, 0),
+            mask.crop((0, 0, fill_width, height)),
+        )
+        did_edge_fill = True
+
+    if right == width and left > 0:
+        fill_width = width - left
+        edge = source_rgb.crop((left - 1, 0, left, height))
+        fill.paste(
+            edge.resize((fill_width, height), Image.Resampling.NEAREST),
+            (left, 0),
+            mask.crop((left, 0, width, height)),
+        )
+        did_edge_fill = True
+
+    if top == 0 and bottom < height:
+        fill_height = bottom
+        edge = fill.crop((0, bottom, width, bottom + 1))
+        fill.paste(
+            edge.resize((width, fill_height), Image.Resampling.NEAREST),
+            (0, 0),
+            mask.crop((0, 0, width, fill_height)),
+        )
+        did_edge_fill = True
+
+    if bottom == height and top > 0:
+        fill_height = height - top
+        edge = fill.crop((0, top - 1, width, top))
+        fill.paste(
+            edge.resize((width, fill_height), Image.Resampling.NEAREST),
+            (0, top),
+            mask.crop((0, top, width, height)),
+        )
+        did_edge_fill = True
+
+    if not did_edge_fill and source_alpha is None:
+        fill.paste(source_rgb.filter(ImageFilter.GaussianBlur(radius=32)), (0, 0), mask)
+
+    if prefill_noise > 0.0:
+        noise = Image.effect_noise(source_rgb.size, 96).convert("L")
+        noise_rgb = Image.merge("RGB", (noise, noise, noise))
+        noisy_fill = Image.blend(fill, noise_rgb, max(0.0, min(prefill_noise, 0.85)))
+        fill.paste(noisy_fill, (0, 0), mask)
+
+    soft_mask = mask.filter(ImageFilter.GaussianBlur(radius=12))
+    softened = fill.filter(ImageFilter.GaussianBlur(radius=8))
+    fill.paste(softened, (0, 0), soft_mask)
+    return fill
+
+
 def generator_for_seed(torch: Any, seed: int, device: str) -> Any:
     if seed < 0:
         return None
@@ -365,10 +585,16 @@ def main(argv: list[str]) -> int:
         return fail(response_path, request_id, "source-image and mask are required.")
 
     try:
-        source = Image.open(source_path).convert("RGB")
+        source_rgba = Image.open(source_path).convert("RGBA")
+        source = source_rgba.convert("RGB")
         output_size = source.size
         mask = load_mask(mask_path, source.size)
         output_mask = mask.copy()
+        if operation == "outpaint":
+            prefill_noise = float(
+                request.get("parameters", {}).get("prefillNoise", 0.42)
+            )
+            source = prefill_outpaint_source(source_rgba, mask, prefill_noise)
         preferences = request.get("preferences", {})
         requested_render_edge = int(
             preferences.get("targetRenderEdge")
@@ -393,7 +619,12 @@ def main(argv: list[str]) -> int:
 
     try:
         import torch
-        from diffusers import AutoPipelineForInpainting
+        from diffusers import (
+            AutoPipelineForInpainting,
+            DPMSolverMultistepScheduler,
+            EulerAncestralDiscreteScheduler,
+            EulerDiscreteScheduler,
+        )
     except Exception as exc:  # noqa: BLE001
         return fail(
             response_path,
@@ -419,12 +650,31 @@ def main(argv: list[str]) -> int:
 
     parameters = request.get("parameters", {})
     preferences = request.get("preferences", {})
-    prompt = parameters.get("prompt") or "restore the selected region naturally"
+    default_prompt = (
+        "seamlessly extend this image outward, continuing the existing subject, "
+        "background, colors, lighting, texture, perspective, and level of detail; "
+        "the central subject must remain unchanged"
+        if operation == "outpaint"
+        else (
+            "reconstruct the selected area with concrete subject detail, matching "
+            "the surrounding perspective, lighting, texture, color, and camera feel"
+        )
+    )
+    prompt = parameters.get("prompt") or default_prompt
     negative_prompt = parameters.get("negativePrompt") or None
     candidate_count = max(1, min(int(parameters.get("candidateCount", 1)), 4))
     cfg = float(parameters.get("cfg", 5.0))
     strength = float(parameters.get("denoise", 0.75))
     steps = int(parameters.get("steps") or 20)
+    scheduler_name = (
+        parameters.get("scheduler")
+        or parameters.get("sampler")
+        or preferences.get("scheduler")
+        or os.environ.get("UNDERPAINT_SCHEDULER")
+        or "euler"
+    )
+    detail_pass = normalized_detail_pass(parameters)
+    detail_pass_report = detail_pass_diagnostics(detail_pass)
     edge_feather_px = max(0, min(int(parameters.get("edgeFeatherPx", 24)), 256))
     preview_max_edge = max(64, min(int(parameters.get("previewMaxEdge", 256)), 512))
     preview_every_steps = int(
@@ -468,6 +718,13 @@ def main(argv: list[str]) -> int:
                 )
             else:
                 raise
+        scheduler_key, scheduler_class = apply_scheduler(
+            pipe,
+            scheduler_name,
+            EulerDiscreteScheduler,
+            EulerAncestralDiscreteScheduler,
+            DPMSolverMultistepScheduler,
+        )
         pipe.to(device)
         if preferences.get("vaeTiling", True):
             if hasattr(pipe, "vae") and hasattr(pipe.vae, "enable_tiling"):
@@ -571,8 +828,11 @@ def main(argv: list[str]) -> int:
                     "maskPath": str(mask_path),
                     "metadata": {
                         "seed": seed,
-                        "modelRole": "inpaint",
+                        "modelRole": operation,
                         "model": model_id,
+                        "scheduler": scheduler_key,
+                        "schedulerClass": scheduler_class,
+                        "detailPass": detail_pass_report,
                         "renderWidth": unpadded_render_size[0],
                         "renderHeight": unpadded_render_size[1],
                         "edgeFeatherPx": edge_feather_px,
@@ -597,6 +857,9 @@ def main(argv: list[str]) -> int:
         "paddedWidth": source.width,
         "paddedHeight": source.height,
         "targetRenderEdge": target_render_edge,
+        "scheduler": scheduler_key,
+        "schedulerClass": scheduler_class,
+        "detailPass": detail_pass_report,
         "edgeFeatherPx": edge_feather_px,
         "maskMin": int(mask_min),
         "maskMax": int(mask_max),
@@ -609,13 +872,19 @@ def main(argv: list[str]) -> int:
         response(
             request_id,
             "succeeded",
-            f"Generated {len(candidates)} candidate(s).",
+            (
+                f"Generated {len(candidates)} candidate(s). "
+                "Detail pass requested, but detector backend is not configured."
+                if detail_pass_report["status"] == "detector-backend-unavailable"
+                else f"Generated {len(candidates)} candidate(s)."
+            ),
             candidates=candidates,
             diagnostics=diagnostics,
             provenance={
                 "backend": "diffusers",
                 "schema": SCHEMA,
                 "model": model_id,
+                "scheduler": scheduler_key,
             },
         ),
     )
