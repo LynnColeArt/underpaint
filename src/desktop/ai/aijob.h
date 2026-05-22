@@ -10,6 +10,7 @@ namespace ai {
 
 enum class Operation {
 	SceneSeparation,
+	ObjectDecomposition,
 	Inpaint,
 	Outpaint,
 	BackgroundRemoval,

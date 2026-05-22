@@ -21,6 +21,29 @@ local-first AI-assisted photo restoration workspace.
   `build-qt5-client-baseline/bin/underpaint-ai-worker-stub`.
 - The real Diffusers worker lives at:
   `tools/ai/underpaint-diffusers-worker.py`.
+- Diffusers is the first runnable image backend. GGUF diffusion support is an
+  explicit experimental backend lane, not a Diffusers drop-in. The refiner
+  settings can pass `backend: "gguf"`, but the worker expects
+  `UNDERPAINT_GGUF_REFINER_WORKER` to point at a future external GGUF image
+  adapter before that path can render.
+- Fooocus SDXL inpaint patching is also an experimental adapter lane. The
+  assets download to `~/.underpaint/models/inpaint/fooocus/`, but the patch is
+  not a Diffusers drop-in; it needs either a Comfy-style model patcher worker or
+  a native equivalent before it can render through the app.
+- RealVisXL V4.0 Inpaint is the first photoreal true-Diffusers inpaint
+  candidate. Launch it with `tools/ai/run-underpaint-realvisxl-inpaint.sh`.
+  A cached 512x512 smoke with 24 steps completed in about 13 seconds and used
+  about 5.2 GB peak allocated VRAM with model CPU offload.
+- The face/body detail pass should crop detected regions, upscale the crop to
+  `detailRenderEdge`, inpaint that crop, then resize/blend it back. It should
+  not run only at the full-candidate resolution, because small faces do not get
+  enough pixels that way.
+- The first model registry is `tools/ai/model-registry.json`. The editor and
+  worker can be pointed at an alternate registry with `UNDERPAINT_MODEL_REGISTRY`.
+- `tools/ai/run-diffusers-worker.sh` sets
+  `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` by default. In
+  `safe4070Mode`, the Diffusers refiner uses model CPU offload automatically;
+  set `UNDERPAINT_AI_CPU_OFFLOAD=1` to force lower-VRAM offload more broadly.
 - The local Python venv is:
   `.venv`.
 - The venv has been set up with:
@@ -31,6 +54,13 @@ local-first AI-assisted photo restoration workspace.
   - `numpy 1.26.4`
   - `pillow 12.2.0`
   - `safetensors 0.7.0`
+  - `ultralytics 8.x`
+  - `rembg 2.0.69`
+  - `onnxruntime 1.26.0`
+- Background removal is wired through `Power Tools > Remove Background...`. The worker
+  prefers `rembg`/U2Net via CPU ONNX Runtime and downloads `~/.u2net/u2net.onnx`
+  on first use. If `rembg` or ONNX Runtime are unavailable, it falls back to a
+  SAM foreground-union dev path and reports that backend in diagnostics.
 - Repeatable install command:
 
 ```bash

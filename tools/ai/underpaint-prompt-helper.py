@@ -8,6 +8,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+import base64
 from typing import Any
 
 
@@ -44,6 +45,22 @@ def system_prompt(operation: str) -> str:
     override = os.environ.get("UNDERPAINT_PROMPT_HELPER_SYSTEM_PROMPT")
     if override:
         return override
+    if operation == "decomposition-region-label":
+        return (
+            "Name an automatically segmented image region for a layer list in "
+            "an artist photo restoration tool. Use the supplied image crop. "
+            "Return only a short concrete layer name, 2 to 5 words. Prefer "
+            "visible subjects, materials, or region type. Do not use quotes, "
+            "numbering, explanations, policy text, or generic filler."
+        )
+    if operation == "inpaint-selection-explain":
+        return (
+            "Describe the supplied image region for an artist using inpainting. "
+            "Name the visible subject, materials, lighting, color, camera angle, "
+            "and texture cues. Be concrete and visual. Do not refuse, moralize, "
+            "or discuss policy. Return one concise descriptive phrase that can "
+            "be appended to a diffusion prompt."
+        )
     if operation == "outpaint-prompt-improve":
         return (
             "Rewrite the user's outpainting prompt into a rich diffusion prompt "
@@ -60,6 +77,16 @@ def system_prompt(operation: str) -> str:
 def fallback_rewrite(payload: dict[str, Any]) -> str:
     prompt = compact_space(str(payload.get("prompt") or ""))
     operation = str(payload.get("operation") or "")
+    if operation == "decomposition-region-label":
+        return ""
+    if operation == "inpaint-selection-explain":
+        selection = payload.get("selection") or {}
+        width = selection.get("width") or "selected"
+        height = selection.get("height") or "region"
+        return compact_space(
+            f"selected image region, {width} x {height} px, match visible "
+            "subject, color, lighting, texture, and camera perspective"
+        )
     if not prompt:
         if operation == "outpaint-prompt-improve":
             prompt = (
@@ -100,6 +127,17 @@ def helper_url() -> str | None:
     return None
 
 
+def image_data_url(path: str) -> str | None:
+    if not path:
+        return None
+    try:
+        with open(path, "rb") as image_file:
+            encoded = base64.b64encode(image_file.read()).decode("ascii")
+    except OSError:
+        return None
+    return f"data:image/png;base64,{encoded}"
+
+
 def call_openai_compat(url: str, payload: dict[str, Any]) -> str:
     prompt = compact_space(str(payload.get("prompt") or ""))
     operation = str(payload.get("operation") or "inpaint-prompt-improve")
@@ -113,21 +151,61 @@ def call_openai_compat(url: str, payload: dict[str, Any]) -> str:
         "denoise": payload.get("denoise"),
         "steps": payload.get("steps"),
     }
+    if operation == "decomposition-region-label":
+        image_url = image_data_url(str(payload.get("imagePath") or ""))
+        user_text = (
+            "Name this segmented image region as a concise layer name. "
+            "Return only the layer name.\n"
+            + json.dumps(
+                {
+                    **context,
+                    "currentLabel": prompt,
+                    "groupLabel": payload.get("groupLabel"),
+                    "regionIndex": payload.get("regionIndex"),
+                    "regionCount": payload.get("regionCount"),
+                },
+                ensure_ascii=False,
+            )
+        )
+        if image_url:
+            user_content: str | list[dict[str, Any]] = [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]
+        else:
+            user_content = user_text
+        max_tokens = 32
+    elif operation == "inpaint-selection-explain":
+        image_url = image_data_url(str(payload.get("imagePath") or ""))
+        user_text = (
+            "Describe this selected image region in concrete visual prompt "
+            "language. Append-friendly phrase only.\n"
+            + json.dumps(context, ensure_ascii=False)
+        )
+        if image_url:
+            user_content: str | list[dict[str, Any]] = [
+                {"type": "text", "text": user_text},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ]
+        else:
+            user_content = user_text
+        max_tokens = 96
+    else:
+        user_content = (
+            "Expand this prompt into one loaded local diffusion prompt, "
+            "about 150 characters. Return only the prompt.\n"
+            + json.dumps(context, ensure_ascii=False)
+        )
+        max_tokens = 128
+
     body = {
         "model": os.environ.get("UNDERPAINT_PROMPT_HELPER_MODEL", "local"),
         "temperature": 0.55,
-        "max_tokens": 128,
+        "max_tokens": max_tokens,
         "chat_template_kwargs": {"enable_thinking": False},
         "messages": [
             {"role": "system", "content": system_prompt(operation)},
-            {
-                "role": "user",
-                "content": (
-                    "Expand this prompt into one loaded local diffusion prompt, "
-                    "about 150 characters. Return only the prompt.\n"
-                    + json.dumps(context, ensure_ascii=False)
-                ),
-            },
+            {"role": "user", "content": user_content},
         ],
     }
     request = urllib.request.Request(
@@ -154,6 +232,7 @@ def main() -> int:
         print(json.dumps({"ok": False, "error": str(exc)}))
         return 2
 
+    operation = str(payload.get("operation") or "")
     url = helper_url()
     if url:
         try:
@@ -162,6 +241,19 @@ def main() -> int:
                 print(json.dumps({"ok": True, "prompt": prompt, "backend": url}))
                 return 0
         except (OSError, urllib.error.URLError, json.JSONDecodeError, KeyError) as exc:
+            if operation in {"decomposition-region-label", "inpaint-selection-explain"}:
+                print(
+                    json.dumps(
+                        {
+                            "ok": False,
+                            "error": (
+                                "Vision helper request failed. This operation "
+                                f"needs a running vision helper: {exc}"
+                            ),
+                        }
+                    )
+                )
+                return 0
             fallback = fallback_rewrite(payload)
             print(
                 json.dumps(
@@ -174,6 +266,20 @@ def main() -> int:
                 )
             )
             return 0
+
+    if operation in {"decomposition-region-label", "inpaint-selection-explain"}:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": (
+                        "This operation needs UNDERPAINT_PROMPT_HELPER_URL "
+                        "pointing at a running vision helper."
+                    ),
+                }
+            )
+        )
+        return 0
 
     print(
         json.dumps(

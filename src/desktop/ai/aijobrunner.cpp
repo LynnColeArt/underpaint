@@ -99,7 +99,8 @@ QString JobRunner::defaultWorkerPath()
 
 JobRunResult JobRunner::run(
 	const JobRequest &request, const QString &workerPath, int timeoutMsec,
-	const ProgressCallback &progressCallback)
+	const ProgressCallback &progressCallback,
+	const std::atomic_bool *cancelRequested)
 {
 	JobRunResult result;
 
@@ -142,16 +143,33 @@ JobRunResult JobRunner::run(
 	timer.start();
 	QByteArray standardOutputBuffer;
 	bool timedOut = false;
+	bool canceled = false;
 	while(!process.waitForFinished(100)) {
 		const QByteArray stdoutChunk = process.readAllStandardOutput();
 		result.standardOutput += stdoutChunk;
 		processProgressLines(
 			standardOutputBuffer, stdoutChunk, progressCallback);
 		result.standardError += process.readAllStandardError();
+		if(cancelRequested && cancelRequested->load()) {
+			canceled = true;
+			break;
+		}
 		if(timeoutMsec >= 0 && timer.elapsed() >= timeoutMsec) {
 			timedOut = true;
 			break;
 		}
+	}
+	if(canceled) {
+		process.kill();
+		process.waitForFinished(3000);
+		result.canceled = true;
+		result.errorMessage = QStringLiteral("AI worker was canceled.");
+		const QByteArray stdoutChunk = process.readAllStandardOutput();
+		result.standardOutput += stdoutChunk;
+		processProgressLines(
+			standardOutputBuffer, stdoutChunk, progressCallback);
+		result.standardError += process.readAllStandardError();
+		return result;
 	}
 	if(timedOut) {
 		process.kill();

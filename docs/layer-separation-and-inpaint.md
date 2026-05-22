@@ -109,18 +109,177 @@ Analysis
   Segmentation map
 ```
 
-### Current Implementation Slice
+### Current Utility Slice
 
-The first implementation is available as `AI > Photo Decomposition...`. It
-captures the visible canvas, submits a `scene-separation` job, and imports the
-returned RGBA region images as normal layers inside a `Photo Decomposition`
-group.
+The current implementation is now named `Power Tools > Color Separation...`. It captures
+the visible canvas, submits the existing `scene-separation` job, and imports
+deterministic luminance/color bands as normal layers inside a `Color Separation`
+region-set group. The region set also includes hidden source and mask artifacts
+so later actions can inspect or reuse the exact material that produced the
+editable region layers. The dialog exposes maximum regions, minimum region
+area, and grouping controls for this utility.
 
-The current worker output is deliberately provisional: it creates deterministic
-luminance-based placeholder regions so the editor workflow can be tested before
-SAM-like segmentation, labeling, and background repair are connected. The
-important behavior is that every proposed region already enters the document as
-an inspectable layer with a corresponding mask path in the AI response.
+Color Separation is useful as a utility and as plumbing validation, but it is
+not the titular decomposition feature. For a flower photo, useful decomposition
+means separable parts like the rose bloom, individual petals, purple foreground
+leaves, green leaves, stem segments, and background foliage clusters. That
+requires SAM-like object/part masks, not color or luminance bands.
+
+### Current Object Slice
+
+`Power Tools > Object Decomposition...` is the first real attempt at the intended
+decomposition feature. It submits an `object-decomposition` job to the AI
+worker. The Python worker uses a SAM checkpoint, defaulting to
+`facebook/sam-vit-base`, samples a point grid according to the selected depth,
+deduplicates overlapping masks, ranks masks by usefulness rather than size,
+keeps a base-remainder layer for pixels not covered by extracted objects,
+rejects background-like masks, cleans small mask fragments and pinholes, then
+imports the resulting object/part masks as movable transparent layers with
+lightly feathered alpha edges.
+
+The worker preserves source RGB while swapping alpha into the cutout PNGs. This
+keeps feathered edges from picking up dark transparent-background fringes.
+After import, extracted-object layers are queued for the same local helper
+naming pass used by color separation; the base-remainder layer keeps its fixed
+name.
+
+This first slice still requires manual background repair: after import, select
+an object layer or group and run `Power Tools > Underpaint Behind Active Layer...`.
+Automatic repaired-base generation should be the next layer on top of this SAM
+mask path.
+
+## Underpainting
+
+Underpainting is the title workflow that turns scene decomposition into a
+restoration operation. It means lifting visible objects into editable regions
+and reconstructing plausible image content underneath them.
+
+The intended flow is:
+
+1. Capture the visible source image.
+2. Run automatic segmentation to produce candidate masks.
+3. Cluster repeating masks into region groups.
+4. Create a usable region set immediately with generic names.
+5. Send region crops to the local helper queue for asynchronous labeling.
+6. Update labels and prompt phrases as helper results arrive.
+7. Let the user select a region or group and run `Underpaint Behind`.
+8. Hide or dim the original source while previewing the repaired background.
+9. Import repair candidates through the same candidate-layer workflow used by
+   inpaint and outpaint.
+
+Underpainting should not block on the language helper. Segmentation and mask
+creation should be usable first. Labels, object classes, and prompt phrases can
+arrive later as enrichment.
+
+### Region Sets
+
+A decomposition result should be a region set, not a flood of top-level layers.
+This matters because useful decomposition can produce 10 masks or 200 masks
+depending on the image and user goal.
+
+Region set structure:
+
+```text
+Scene Decomposition
+  Region Set - Balanced
+    Foreground objects
+      Region 001
+      Region 002
+    Repeating small regions
+      Region 003
+      Region 004
+    Tonal/background regions
+      Region 005
+    Masks
+    Source snapshot
+```
+
+For the first implementation, groups can be provisional. SAM will eventually
+provide better masks, and the helper can rename groups after inspecting region
+crops. The important early behavior is that repeated small regions can live
+under one group instead of exploding the layer list.
+
+### Decomposition Depth
+
+Precision should be user-configurable as decomposition depth:
+
+- `Clean`: fewer regions, object-level grouping, good for normal restoration.
+- `Balanced`: useful default, preserves obvious objects and larger parts.
+- `Detailed`: smaller objects and parts are retained.
+- `Exhaustive`: high mask count for mask harvesting, damage cleanup, foliage,
+  scratches, hair, lace, jewelry, and other dense subjects.
+
+Advanced controls should include:
+
+- max masks
+- minimum region area
+- overlap behavior
+- keep nested masks
+- mask feather
+- mask expand/contract
+- group repeated regions
+- helper labeling priority
+
+### Helper Labeling Queue
+
+The local helper is the slowest part of the system, so it must not stop the
+artist from working.
+
+The queue should:
+
+- start with generic `Region 001` labels
+- rename imported decomposition layers after the region set is already usable
+- label selected and visible regions first
+- prioritize large regions over tiny masks
+- allow user-hovered or user-selected regions to jump the queue
+- cache labels by source image hash and mask fingerprint
+- discard stale helper results if the region was deleted or merged
+
+The helper should return small structured enrichments:
+
+```json
+{
+  "label": "foreground branch",
+  "group": "Foreground objects",
+  "promptPhrase": "thin wet foreground branch crossing the lake scene",
+  "backgroundGuess": "lake water, waterfall mist, and wet rock texture behind it",
+  "confidence": 0.72
+}
+```
+
+This is a smart function, not an autonomous agent. It suggests labels and prompt
+phrases; the user remains in control.
+
+Current first slice: after `Power Tools > Color Separation...` imports the region set,
+Underpaint starts a quiet helper pass using the candidate region image. When the
+vision helper returns a short name, the visible region layer is retitled. If the
+helper is unavailable or a label fails, the generic region name remains and the
+workflow is not interrupted. The same asynchronous label queue should be reused
+for true object/part decomposition once SAM-like masks are connected.
+
+### Underpaint Behind
+
+When the user runs `Underpaint Behind` on a region or group:
+
+- the original/source image remains preserved
+- the selected mask becomes the hole mask
+- the extracted object can stay above the repaired background for comparison
+- the original source should be hidden or dimmed during candidate preview
+- cancel restores the visibility state and removes temporary candidates
+- accept leaves the chosen candidate visible and keeps provenance
+
+For grouped regions, the masks are combined and repaired as one operation unless
+the user promotes an individual region out of the group.
+
+Current first slice: `Power Tools > Underpaint Behind Active Layer...` uses the active
+layer alpha as the object mask, or combines visible child layer alpha when the
+active item is a group. It exports a padded context crop, runs the existing
+inpaint worker, and imports repaired background candidates below the active
+layer or group. This makes decomposition layers immediately usable as lifted
+objects while SAM masks and asynchronous helper labels are still being
+connected. Decomposition also preserves hidden mask layers in the region set so
+we have a durable bridge from "visible extracted object" to "editable hole
+mask."
 
 ### Region Editing
 

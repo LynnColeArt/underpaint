@@ -68,6 +68,8 @@ QString operationKey(Operation operation)
 	switch(operation) {
 	case Operation::SceneSeparation:
 		return QStringLiteral("scene-separation");
+	case Operation::ObjectDecomposition:
+		return QStringLiteral("object-decomposition");
 	case Operation::Inpaint:
 		return QStringLiteral("inpaint");
 	case Operation::Outpaint:
@@ -95,6 +97,8 @@ QString operationDisplayName(Operation operation)
 	switch(operation) {
 	case Operation::SceneSeparation:
 		return QStringLiteral("Scene Separation");
+	case Operation::ObjectDecomposition:
+		return QStringLiteral("Object Decomposition");
 	case Operation::Inpaint:
 		return QStringLiteral("Inpaint");
 	case Operation::Outpaint:
@@ -124,6 +128,7 @@ Operation operationFromKey(const QString &key, bool *ok)
 		Operation operation;
 	} operations[] = {
 		{"scene-separation", Operation::SceneSeparation},
+		{"object-decomposition", Operation::ObjectDecomposition},
 		{"inpaint", Operation::Inpaint},
 		{"generative-fill", Operation::Inpaint},
 		{"outpaint", Operation::Outpaint},

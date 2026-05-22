@@ -59,7 +59,7 @@ args=(
 	--no-warmup
 )
 
-if [[ "${UNDERPAINT_PROMPT_HELPER_ENABLE_MMPROJ:-0}" == "1" && -f "$MMPROJ_PATH" ]]; then
+if [[ "${UNDERPAINT_PROMPT_HELPER_ENABLE_MMPROJ:-1}" == "1" && -f "$MMPROJ_PATH" ]]; then
 	args+=(--mmproj "$MMPROJ_PATH")
 else
 	args+=(--no-mmproj)

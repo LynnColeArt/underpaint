@@ -22,6 +22,8 @@ These references should remain explicit unless a later document says otherwise:
 
 - `README.md` upstream/provenance links and the statement that Underpaint is
   derived from Drawpile.
+- `docs/source-intake.md`, which tracks external applications, runtimes,
+  implementation references, and model assets used by the Underpaint fork.
 - `docs/drawpile/`, which is the inherited upstream documentation area.
 - `AUTHORS`, `ChangeLog`, `LICENSE.txt`, and source headers.
 - AppStream and release notes that describe historical Drawpile releases.

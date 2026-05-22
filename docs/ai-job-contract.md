@@ -28,6 +28,7 @@ The C++ request and response types live in `src/desktop/ai/aijob.h`.
 ## Operation Keys
 
 - `scene-separation`
+- `object-decomposition`
 - `inpaint`
 - `outpaint`
 - `background-removal`
@@ -40,6 +41,23 @@ The C++ request and response types live in `src/desktop/ai/aijob.h`.
 
 Workers may still accept the older `generative-fill` key as a compatibility
 alias for `inpaint`, but new editor requests should emit `inpaint`.
+
+## Background Removal
+
+The desktop `Power Tools > Remove Background...` action exports the visible canvas as a
+`source-image`, submits a `background-removal` job, and imports a grouped
+foreground cutout. The group contains:
+
+- `Background Removed`, an RGBA foreground cutout.
+- `Foreground Matte`, a hidden grayscale alpha matte artifact.
+- `Source Snapshot`, a hidden copy of the input image.
+
+The Python worker prefers `rembg` with the CPU ONNX Runtime backend for this
+quick local slice. The first run downloads `u2net.onnx` into `~/.u2net`. If
+`rembg` or ONNX Runtime are unavailable, the worker falls back to a SAM
+foreground-union path and reports that backend in diagnostics. That fallback is
+useful for development, but the intended community-quality path is a dedicated
+matting/background-removal model such as BiRefNet.
 
 ## Request Shape
 
@@ -100,7 +118,7 @@ should point at files in a temporary job directory owned by the editor.
   },
   "provenance": {
     "createdBy": "underpaint",
-    "uiEntryPoint": "AI/Inpaint"
+    "uiEntryPoint": "Power Tools/Inpaint"
   }
 }
 ```
@@ -179,26 +197,60 @@ temporary job directory, writes `request.json`, launches the worker with
 `QProcess`, reads `response.json`, and reports process or parse failures
 without crashing the editor.
 
-## Photo Decomposition
+## Color Separation
 
-The desktop `AI > Photo Decomposition...` action is the first editor path for
-layer separation. It exports the visible canvas as a `source-image`, submits a
-`scene-separation` job, and imports every returned candidate as a normal
-transparent layer inside a `Photo Decomposition` group.
+The desktop `Power Tools > Color Separation...` action is a utility path for
+luminance/color-band layer separation. It exports the visible canvas as a
+`source-image`, submits the existing `scene-separation` job, and imports every
+returned candidate as a normal transparent layer inside a `Color Separation`
+group.
 
-The initial worker behavior is intentionally a placeholder. Both the compiled
-stub and Python worker split the image into deterministic luminance regions
+The worker behavior is intentionally separate from the future object/part
+decomposition feature. Both the compiled stub and Python worker split the image
+into deterministic luminance regions
 such as `Shadows`, `Darks`, `Midtones`, `Lights`, and `Highlights`. This validates
 the editor contract, layer grouping, progress UI, and import behavior before a
-real segmentation backend is chosen.
+real segmentation backend is chosen, but it should not be presented as the
+flower/petal/leaf style decomposition workflow.
 
 Future model-backed workers should keep the same response shape:
 
 - `imagePath` should point to an RGBA layer image in document coordinates.
 - `maskPath` should point to the corresponding grayscale region mask.
 - `label` should be human-readable enough for the layer list.
-- `metadata.modelRole` should use `photo-decomposition`.
+- `metadata.modelRole` should use `color-separation` for this utility path.
 - Progress events may use `candidate` events as each region becomes available.
+
+## Object Decomposition
+
+The desktop `Power Tools > Object Decomposition...` action is the first model-backed
+path for the actual Underpaint decomposition workflow. It exports the visible
+canvas as a `source-image`, submits an `object-decomposition` job, and imports
+returned object/part masks as transparent movable layers.
+
+The Python worker currently uses SAM through `transformers`, defaulting to
+`facebook/sam-vit-base`. The default can be overridden with
+`UNDERPAINT_SAM_MODEL` or a future model-manager entry. The operation returns
+the same candidate shape as color separation. Worker-side selection ranks masks
+by usefulness rather than size, keeps a base-remainder layer for pixels not
+covered by extracted objects, removes small disconnected fragments, fills only
+tiny pinholes, rejects likely background masks, and emits a softly feathered
+cutout alpha:
+
+- `imagePath` points to the RGBA extracted object/part layer.
+- `maskPath` points to the corresponding grayscale mask.
+- `metadata.modelRole` uses `object-decomposition`.
+- `metadata.maskRole` uses `extracted-object`.
+- `metadata.bounds`, `areaPixels`, and `samPredictedIou` describe the mask.
+
+Cutout PNGs preserve the source RGB and replace only the alpha channel. This
+avoids dark premultiplied-looking fringes around feathered masks.
+
+The first slice does not automatically repair the base under each extracted
+object. Users can select an imported object layer or group and run
+`Power Tools > Underpaint Behind Active Layer...` to generate repaired background
+candidates. A later slice should run that underpaint step automatically as part
+of object decomposition.
 
 ## Prompt Helper
 
@@ -289,6 +341,42 @@ The worker uses `UNDERPAINT_INPAINT_MODEL` when a different Diffusers
 inpainting model should be tested. It requires CUDA by default. A CPU-only
 smoke path exists behind `UNDERPAINT_AI_ALLOW_CPU=1`, but that is expected to be
 very slow and is not representative of the RTX 4070 target.
+
+The current worker keeps the editor contract backend-neutral while using
+Diffusers as the first runnable implementation. Model parameters may carry a
+backend value such as `diffusers` or `gguf`; the editor should pass that through
+as scheduling metadata rather than assuming all model identifiers are Diffusers
+repositories.
+
+The first registry file lives at:
+
+```text
+tools/ai/model-registry.json
+```
+
+Set `UNDERPAINT_MODEL_REGISTRY` to point the editor and worker at a different
+registry during experiments. Registry entries describe capability, backend,
+format, model locator, license notes, install state, and runtime policy. Job
+parameters can pass `modelId`; workers resolve that id into backend/model facts
+before loading or delegating to a backend adapter.
+
+The refiner settings support two backend names:
+
+- `diffusers`: runs through `StableDiffusionXLImg2ImgPipeline`.
+- `gguf`: experimental adapter lane for a future SDXL GGUF image runtime.
+
+GGUF diffusion checkpoints are not passed to Diffusers pipelines directly. When
+the GGUF refiner backend is selected, the worker expects an external adapter
+configured by `UNDERPAINT_GGUF_REFINER_WORKER`. That adapter receives a small
+JSON request, response path, and working directory, then returns an output image
+path. Until a GGUF image runtime is wired in, selecting this backend fails
+cleanly instead of trying to load a `.gguf` file as a Diffusers pipeline.
+
+In `safe4070Mode`, the Diffusers refiner uses model CPU offload by default to
+avoid keeping both XL-class base/refiner memory pressure entirely on the GPU.
+This makes the refiner slower but more likely to complete on 12 GB cards. Set
+`UNDERPAINT_AI_CPU_OFFLOAD=1` to force model CPU offload more broadly during
+local testing.
 
 Current smoke result after the CUDA driver refresh: a 512x512 inpainting request
 with one low-step candidate succeeded on the RTX 4070, returned a 512x512 PNG,

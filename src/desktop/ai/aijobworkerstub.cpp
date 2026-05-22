@@ -113,6 +113,59 @@ QString regionLabel(int index, int count)
 	return QStringLiteral("Region %1").arg(index + 1);
 }
 
+QString decompositionDepthLabel(const QString &depth)
+{
+	if(depth == QStringLiteral("clean")) {
+		return QStringLiteral("Clean");
+	}
+	if(depth == QStringLiteral("detailed")) {
+		return QStringLiteral("Detailed");
+	}
+	if(depth == QStringLiteral("exhaustive")) {
+		return QStringLiteral("Exhaustive");
+	}
+	return QStringLiteral("Balanced");
+}
+
+QString regionGroupId(const QString &label)
+{
+	QString id;
+	bool previousDash = false;
+	for(const QChar ch : label.trimmed().toLower()) {
+		if(ch.isLetterOrNumber()) {
+			id.append(ch);
+			previousDash = false;
+		} else if(!previousDash) {
+			id.append(QLatin1Char('-'));
+			previousDash = true;
+		}
+	}
+	while(id.startsWith(QLatin1Char('-'))) {
+		id.remove(0, 1);
+	}
+	while(id.endsWith(QLatin1Char('-'))) {
+		id.chop(1);
+	}
+	return id.isEmpty() ? QStringLiteral("region-group") : id;
+}
+
+QString placeholderRegionGroupLabel(
+	const QString &label, int index, bool groupRepeatedRegions)
+{
+	if(!groupRepeatedRegions) {
+		return QStringLiteral("%1 Regions").arg(label);
+	}
+	if(label == QStringLiteral("Shadows") || label == QStringLiteral("Darks") ||
+	   label == QStringLiteral("Midtones") || label == QStringLiteral("Lights") ||
+	   label == QStringLiteral("Highlights")) {
+		return QStringLiteral("Tonal Regions");
+	}
+	if(index >= 8) {
+		return QStringLiteral("Small Repeating Regions");
+	}
+	return QStringLiteral("Foreground Regions");
+}
+
 void applyAlphaMask(QImage &image, const QString &maskPath)
 {
 	QImage mask(maskPath);
@@ -236,21 +289,45 @@ int writeSceneSeparationResponse(
 	QDir dir(jobDirectory);
 	QString error;
 	const int requestedRegionCount =
-		request.parameters.value(QStringLiteral("maxRegions")).toInt(5);
-	const int regionCount = qBound(2, requestedRegionCount, 8);
+		request.parameters.value(QStringLiteral("maxMasks"))
+			.toInt(request.parameters.value(QStringLiteral("maxRegions")).toInt(5));
+	const int regionCount = qBound(2, requestedRegionCount, 32);
 	const int minRegionAreaPct =
 		qBound(1, request.parameters.value(QStringLiteral("minRegionAreaPct")).toInt(3), 20);
+	QString decompositionDepth =
+		request.parameters.value(QStringLiteral("decompositionDepth"))
+			.toString(QStringLiteral("balanced"))
+			.toLower();
+	if(decompositionDepth != QStringLiteral("clean") &&
+	   decompositionDepth != QStringLiteral("balanced") &&
+	   decompositionDepth != QStringLiteral("detailed") &&
+	   decompositionDepth != QStringLiteral("exhaustive")) {
+		decompositionDepth = QStringLiteral("balanced");
+	}
+	const bool groupRepeatedRegions =
+		request.parameters.value(QStringLiteral("groupRepeatedRegions")).toBool(true);
+	const QString regionSetId =
+		QStringLiteral("region-set-%1").arg(decompositionDepth);
+	const QString regionSetLabel = QStringLiteral("Region Set - %1").arg(
+		decompositionDepthLabel(decompositionDepth));
+	const bool objectDecomposition =
+		request.operation == ai::Operation::ObjectDecomposition;
+	const QString modelRole = objectDecomposition
+								  ? QStringLiteral("object-decomposition")
+								  : QStringLiteral("color-separation");
 
 	ai::JobResponse response;
 	response.id = request.id;
 	response.status = ai::JobStatus::Succeeded;
 	response.message =
-		QStringLiteral("Generated %1 placeholder decomposition layer(s).")
+		QStringLiteral("Generated %1 color separation layer(s).")
 			.arg(regionCount);
 
 	for(int i = 0; i < regionCount; ++i) {
 		const QString candidateId = QStringLiteral("region-%1").arg(i + 1);
 		const QString label = regionLabel(i, regionCount);
+		const QString groupLabel =
+			placeholderRegionGroupLabel(label, i, groupRepeatedRegions);
 		const QString imagePath =
 			dir.filePath(QStringLiteral("%1.png").arg(candidateId));
 		const QString maskPath =
@@ -268,10 +345,22 @@ int writeSceneSeparationResponse(
 		candidate.metadata = QJsonObject{
 			{QStringLiteral("operation"), ai::operationKey(request.operation)},
 			{QStringLiteral("placeholder"), true},
-			{QStringLiteral("modelRole"), QStringLiteral("photo-decomposition")},
+			{QStringLiteral("modelRole"), modelRole},
+			{QStringLiteral("model"), QStringLiteral("placeholder-luma-regions")},
+			{QStringLiteral("regionSetId"), regionSetId},
+			{QStringLiteral("regionSetLabel"), regionSetLabel},
+			{QStringLiteral("groupId"), regionGroupId(groupLabel)},
+			{QStringLiteral("groupLabel"), groupLabel},
 			{QStringLiteral("regionIndex"), i},
 			{QStringLiteral("regionCount"), regionCount},
+			{QStringLiteral("requestedRegionCount"), requestedRegionCount},
 			{QStringLiteral("minRegionAreaPct"), minRegionAreaPct},
+			{QStringLiteral("decompositionDepth"), decompositionDepth},
+			{QStringLiteral("groupRepeatedRegions"), groupRepeatedRegions},
+			{QStringLiteral("labelStatus"), QStringLiteral("placeholder")},
+			{QStringLiteral("helperStatus"), QStringLiteral("pending")},
+			{QStringLiteral("maskRole"), QStringLiteral("extracted-region")},
+			{QStringLiteral("promptPhrase"), label.toLower()},
 		};
 		writeProgressEvent(QJsonObject{
 			{QStringLiteral("schema"), ai::schemaVersion()},
@@ -279,6 +368,7 @@ int writeSceneSeparationResponse(
 			{QStringLiteral("id"), candidateId},
 			{QStringLiteral("candidate"), i + 1},
 			{QStringLiteral("label"), label},
+			{QStringLiteral("groupLabel"), groupLabel},
 			{QStringLiteral("imagePath"), imagePath},
 		});
 		response.candidates.append(candidate);
@@ -286,7 +376,12 @@ int writeSceneSeparationResponse(
 
 	response.diagnostics = QJsonObject{
 		{QStringLiteral("elapsedMsec"), int(elapsedMsec)},
+		{QStringLiteral("requestedRegionCount"), requestedRegionCount},
 		{QStringLiteral("regionCount"), regionCount},
+		{QStringLiteral("decompositionDepth"), decompositionDepth},
+		{QStringLiteral("groupRepeatedRegions"), groupRepeatedRegions},
+		{QStringLiteral("regionSetId"), regionSetId},
+		{QStringLiteral("regionSetLabel"), regionSetLabel},
 	};
 	response.provenance = QJsonObject{
 		{QStringLiteral("backend"), QStringLiteral("worker-stub")},
@@ -362,7 +457,8 @@ int main(int argc, char **argv)
 			responsePath, request.id,
 			QStringLiteral("Could not create job directory."));
 	}
-	if(request.operation == ai::Operation::SceneSeparation) {
+	if(request.operation == ai::Operation::SceneSeparation ||
+	   request.operation == ai::Operation::ObjectDecomposition) {
 		return writeSceneSeparationResponse(
 			request, responsePath, jobDirectory, timer.elapsed());
 	}

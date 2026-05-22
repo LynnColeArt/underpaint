@@ -5,6 +5,7 @@
 #include <QByteArray>
 #include <QJsonObject>
 #include <QString>
+#include <atomic>
 #include <functional>
 
 namespace ai {
@@ -20,6 +21,7 @@ struct JobRunResult {
 	int exitCode = -1;
 	QByteArray standardOutput;
 	QByteArray standardError;
+	bool canceled = false;
 };
 
 class JobRunner {
@@ -30,7 +32,8 @@ public:
 	static JobRunResult run(
 		const JobRequest &request, const QString &workerPath = QString(),
 		int timeoutMsec = 60000,
-		const ProgressCallback &progressCallback = ProgressCallback());
+		const ProgressCallback &progressCallback = ProgressCallback(),
+		const std::atomic_bool *cancelRequested = nullptr);
 };
 
 }

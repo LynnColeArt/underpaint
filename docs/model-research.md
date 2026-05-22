@@ -201,6 +201,12 @@ Diffusers documents VAE slicing, VAE tiling, CPU/model/group offload, and memory
 
 ## Model Manager Requirements From Research
 
+The first machine-readable registry lives at `tools/ai/model-registry.json`.
+It is intentionally small and editable while the local backend strategy is
+still moving. The desktop Model Manager reads it for concrete entries, and the
+worker can resolve `modelId` values from job parameters into backend/model
+loader facts.
+
 Each model entry should include:
 
 - id
@@ -236,6 +242,106 @@ runtime_policy:
   unload_after_job: true
 ```
 
+Diffusion model entries should distinguish model format from operation role.
+For example, an SDXL refiner can appear as a Diffusers repository or as a GGUF
+file, but those require different runtime adapters:
+
+```yaml
+id: sdxl-refiner-q4-gguf
+capabilities:
+  - refine
+backend: gguf
+format: gguf
+source_url: https://huggingface.co/gpustack/stable-diffusion-xl-refiner-1.0-GGUF
+preferred_precision: q4_1
+output_artifact: rgba_candidate
+runtime_policy:
+  keep_warm: false
+  unload_after_job: true
+  requires_external_runner: true
+```
+
+GGUF is attractive for RTX 4070-class local workflows because disk and memory
+pressure may be lower than full SDXL Diffusers checkpoints. It should be treated
+as an experimental backend lane until a concrete image runtime proves inpaint,
+outpaint, refiner, progress, and output parity with the main job contract.
+
+## Fooocus SDXL Inpaint Patch
+
+The Fooocus inpaint assets are a promising way to decouple photoreal base-model
+choice from inpaint capability. Instead of requiring a separate inpaint
+fine-tune for every checkpoint, the Fooocus patch can be applied to regular
+SDXL checkpoints and used with inpaint conditioning.
+
+Important integration notes:
+
+- The assets live at `lllyasviel/fooocus_inpaint` and should be stored under
+  `~/.underpaint/models/inpaint/fooocus/`.
+- The key files are `fooocus_inpaint_head.pth`,
+  `inpaint_v26.fooocus.patch`, and `fooocus_lama.safetensors`.
+- The patch is not a Diffusers drop-in. The ComfyUI reference implementation
+  applies LoRA-like UNet patches and injects an input-block feature computed
+  from mask and latent conditioning.
+- The reference notes say regular SDXL checkpoints should be used; distilled
+  Turbo, Lightning, and Hyper merges are not expected to behave well.
+- Underpaint should treat this as a separate backend/adapter lane until a
+  native patcher or a Comfy-style worker proves end-to-end generation.
+
+Helper scripts:
+
+```bash
+tools/ai/download-underpaint-fooocus-inpaint.sh
+tools/ai/underpaint-fooocus-patch-probe.py \
+  --checkpoint ~/.underpaint/models/checkpoints/juggernaut-x-v10/Juggernaut-X-RunDiffusion-NSFW.safetensors
+```
+
+Initial probe against the local Juggernaut X v10 checkpoint found the Fooocus
+head shape is valid (`[320, 5, 3, 3]`) and all 960 patch keys match the
+checkpoint when the patch keys are prefixed with `model.`. That suggests the
+weight patch is compatible with the original SDXL checkpoint key layout. The
+remaining integration work is the dynamic input-block feature injection from
+mask/latent conditioning.
+
+External project and asset intake for Fooocus, ComfyUI references, Diffusers,
+and other runtime dependencies is tracked in `docs/source-intake.md`.
+
+## Photoreal SDXL Inpaint Candidates
+
+RealVisXL V4.0 Inpaint is now tracked as a first photoreal candidate for the
+existing Diffusers worker:
+
+```text
+model id: realvisxl-v4-inpaint-diffusers
+model: OzzyGT/RealVisXL_V4.0_inpainting
+launcher: tools/ai/run-underpaint-realvisxl-inpaint.sh
+smoke harness: tools/ai/underpaint-inpaint-model-smoke.py
+```
+
+Initial results:
+
+- first run cached the model and took about ten minutes
+- cached 512x512 smoke at 24 steps completed in about 13 seconds
+- peak allocated VRAM with CPU offload was about 5.2 GB
+- the model replaced the masked test region at denoise 1.0
+
+This is a practical near-term lane because it uses a true
+`StableDiffusionXLInpaintPipeline` repository. Fooocus remains the larger
+adapter lane for patching regular SDXL photoreal checkpoints.
+
+## Detail Pass Runtime
+
+Face/body/hand detailing should not run only at the full candidate image
+resolution. Small detected regions need their own crop/detail pass:
+
+```text
+detection box -> padded crop -> resize to detail render edge -> inpaint crop
+-> resize back -> blend into candidate
+```
+
+The current worker exposes `detailRenderEdge` and `minCropEdge` in
+`detailPass`. The default detail render edge is 768 px, with 1024 px available
+for higher-quality tests on the RTX 4070.
+
 ## License Notes
 
 License status must be tracked per model, not per feature.
@@ -252,6 +358,7 @@ Important examples:
 - ControlNet code: Apache-2.0; weights need per-checkpoint review.
 - SD 1.5 inpainting: CreativeML OpenRAIL-M, but not a product-default target.
 - SDXL inpainting: OpenRAIL++.
+- Fooocus inpaint patch: OpenRAIL.
 
 ## Sources
 
@@ -270,6 +377,8 @@ Important examples:
 - Diffusers memory optimization docs: https://huggingface.co/docs/diffusers/main/optimization/memory
 - SD 1.5 inpainting model card: https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-inpainting
 - SDXL inpainting model card: https://huggingface.co/diffusers/stable-diffusion-xl-1.0-inpainting-0.1
+- Fooocus inpaint assets: https://huggingface.co/lllyasviel/fooocus_inpaint
+- ComfyUI inpaint nodes reference: https://github.com/Acly/comfyui-inpaint-nodes
 - Real-ESRGAN model zoo: https://github.com/xinntao/Real-ESRGAN/blob/master/docs/model_zoo.md
 - GFPGAN official repo: https://github.com/TencentARC/GFPGAN
 - ONNX Runtime TensorRT provider: https://onnxruntime.ai/docs/execution-providers/TensorRT-ExecutionProvider.html
@@ -283,4 +392,6 @@ Important examples:
 - Compare Real-ESRGAN x2plus, x4plus, and realesr-general-x4v3 on scanned photos.
 - Test GFPGAN v1.2 vs v1.3 on historical portraits and document identity drift.
 - Establish exact XL-class inpaint runtime settings for 4070: resolution, crop size, context padding, VAE tiling, batch size, variant scheduling, and model unload policy.
+- Decide whether Fooocus inpaint patching should run through a Comfy-style
+  external worker first or through a native Diffusers-compatible patcher.
 - Create a model registry schema and fill it with the candidates above.

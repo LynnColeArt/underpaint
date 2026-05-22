@@ -129,3 +129,6 @@ This fork keeps Drawpile provenance visible while exploring a different product 
 Underpaint is based on Drawpile and remains under GPLv3. See [LICENSE.txt](LICENSE.txt).
 
 Model weights and AI providers have their own licenses. Underpaint tracks model license and commercial-use status as a first-class model-manager concern.
+
+External apps, runtimes, implementation references, and downloaded model assets
+are tracked in [docs/source-intake.md](docs/source-intake.md).

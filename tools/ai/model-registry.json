@@ -1,0 +1,209 @@
+{
+  "schema": "underpaint.model-registry.v1",
+  "models": [
+    {
+      "id": "realvisxl-v4-inpaint-diffusers",
+      "displayName": "RealVisXL V4.0 Inpaint",
+      "capabilities": ["inpaint", "outpaint"],
+      "backend": "diffusers",
+      "format": "diffusers_repo",
+      "model": "OzzyGT/RealVisXL_V4.0_inpainting",
+      "sourceUrl": "https://huggingface.co/OzzyGT/RealVisXL_V4.0_inpainting",
+      "license": "openrail++",
+      "commercialUse": "license-restricted",
+      "installedState": "optional",
+      "defaultPrecision": "fp16",
+      "diskSizeMb": 6615,
+      "expectedVramMb": 9000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "rgba_candidate",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "oneHeavyModelAtATime": true
+      },
+      "notes": "Photoreal SDXL inpaint candidate. True StableDiffusionXLInpaintPipeline repository."
+    },
+    {
+      "id": "fooocus-sdxl-inpaint-patch",
+      "displayName": "Fooocus SDXL Inpaint Patch",
+      "capabilities": ["inpaint", "outpaint"],
+      "backend": "comfy",
+      "format": "fooocus_patch",
+      "model": "~/.underpaint/models/inpaint/fooocus/inpaint_v26.fooocus.patch",
+      "sourceUrl": "https://huggingface.co/lllyasviel/fooocus_inpaint",
+      "license": "openrail",
+      "commercialUse": "license-restricted",
+      "installedState": "optional",
+      "diskSizeMb": 1350,
+      "expectedVramMb": 9000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "rgba_candidate",
+      "experimental": true,
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "oneHeavyModelAtATime": true,
+        "requiresBaseSdxlCheckpoint": true,
+        "requiresComfyStyleModelPatcher": true,
+        "head": "~/.underpaint/models/inpaint/fooocus/fooocus_inpaint_head.pth",
+        "lama": "~/.underpaint/models/inpaint/fooocus/fooocus_lama.safetensors"
+      },
+      "notes": "Experimental Fooocus patch lane for regular SDXL checkpoints. Not a Diffusers drop-in; needs a Comfy-style model patcher or native equivalent."
+    },
+    {
+      "id": "juggernaut-x-v10-single-file",
+      "displayName": "Juggernaut X v10",
+      "capabilities": ["inpaint", "outpaint", "img2img"],
+      "backend": "diffusers",
+      "format": "single_file_sdxl",
+      "model": "~/.underpaint/models/checkpoints/juggernaut-x-v10/Juggernaut-X-RunDiffusion-NSFW.safetensors",
+      "sourceUrl": "https://huggingface.co/RunDiffusion/Juggernaut-X-v10",
+      "license": "creativeml-openrail-m",
+      "commercialUse": "license-restricted",
+      "installedState": "optional",
+      "defaultPrecision": "fp16",
+      "diskSizeMb": 6780,
+      "expectedVramMb": 9000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "rgba_candidate",
+      "experimental": true,
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "oneHeavyModelAtATime": true,
+        "adapter": "masked_img2img"
+      },
+      "notes": "Single-file SDXL base model used through masked img2img and alpha compositing, not a dedicated inpaint UNet."
+    },
+    {
+      "id": "juggernaut-xl-inpaint-diffusers",
+      "displayName": "Juggernaut XL Inpaint",
+      "capabilities": ["inpaint", "outpaint"],
+      "backend": "diffusers",
+      "format": "diffusers_repo",
+      "model": "jgdickman/juggernaut-xl-inpainting",
+      "sourceUrl": "https://huggingface.co/jgdickman/juggernaut-xl-inpainting",
+      "license": "check-model-card",
+      "commercialUse": "check-model-card",
+      "installedState": "cached",
+      "defaultPrecision": "fp16",
+      "expectedVramMb": 8000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "rgba_candidate",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "oneHeavyModelAtATime": true
+      },
+      "notes": "Current local XL-class inpaint/outpaint baseline."
+    },
+    {
+      "id": "sdxl-refiner-diffusers",
+      "displayName": "SDXL Refiner",
+      "capabilities": ["refine"],
+      "backend": "diffusers",
+      "format": "diffusers_repo",
+      "model": "stabilityai/stable-diffusion-xl-refiner-1.0",
+      "sourceUrl": "https://huggingface.co/stabilityai/stable-diffusion-xl-refiner-1.0",
+      "license": "openrail++",
+      "commercialUse": "license-restricted",
+      "installedState": "not-installed",
+      "defaultPrecision": "fp16",
+      "expectedVramMb": 7000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "rgba_candidate",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "oneHeavyModelAtATime": true
+      },
+      "notes": "Full Diffusers refiner. Large local download; off by default."
+    },
+    {
+      "id": "sdxl-refiner-gguf-q4-1",
+      "displayName": "SDXL Refiner GGUF Q4_1",
+      "capabilities": ["refine"],
+      "backend": "gguf",
+      "format": "gguf",
+      "model": "~/.underpaint/models/refiner/stable-diffusion-xl-refiner-1.0-GGUF/stable-diffusion-xl-refiner-1.0-Q4_1.gguf",
+      "sourceUrl": "https://huggingface.co/gpustack/stable-diffusion-xl-refiner-1.0-GGUF",
+      "license": "openrail++",
+      "commercialUse": "license-restricted",
+      "installedState": "optional",
+      "defaultPrecision": "q4_1",
+      "diskSizeMb": 4117,
+      "expectedVramMb": 5000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "rgba_candidate",
+      "experimental": true,
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "oneHeavyModelAtATime": true,
+        "requiresExternalRunner": true
+      },
+      "notes": "Experimental GGUF refiner lane. Requires UNDERPAINT_GGUF_REFINER_WORKER."
+    },
+    {
+      "id": "adetailer-yolo-pack",
+      "displayName": "ADetailer YOLO Pack",
+      "capabilities": ["face_detail", "body_detail", "hand_detail"],
+      "backend": "ultralytics",
+      "format": "pt",
+      "model": "~/.underpaint/models/detail/adetailer",
+      "sourceUrl": "https://huggingface.co/Bingsu/adetailer",
+      "license": "check-model-card",
+      "commercialUse": "check-model-card",
+      "installedState": "installed",
+      "expectedVramMb": 0,
+      "outputArtifact": "detection_regions",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true
+      },
+      "notes": "Face, body, and hand detection for targeted detail passes."
+    },
+    {
+      "id": "sam-vit-base-transformers",
+      "displayName": "SAM ViT Base",
+      "capabilities": ["object_decomposition", "segmentation"],
+      "backend": "transformers",
+      "format": "hf_repo",
+      "model": "facebook/sam-vit-base",
+      "sourceUrl": "https://huggingface.co/facebook/sam-vit-base",
+      "license": "apache-2.0",
+      "commercialUse": "allowed",
+      "installedState": "cached",
+      "expectedVramMb": 2500,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "object_masks",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true
+      },
+      "notes": "First object/part decomposition backend. Used by object-decomposition jobs unless UNDERPAINT_SAM_MODEL overrides it."
+    },
+    {
+      "id": "rembg-u2net-cpu",
+      "displayName": "Rembg U2Net",
+      "capabilities": ["background_removal", "foreground_matte"],
+      "backend": "rembg",
+      "format": "onnx",
+      "model": "~/.u2net/u2net.onnx",
+      "sourceUrl": "https://github.com/danielgatis/rembg",
+      "license": "mit",
+      "commercialUse": "allowed",
+      "installedState": "cached",
+      "expectedVramMb": 0,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "foreground_cutout",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "cpuBackend": true
+      },
+      "notes": "Quick local background removal backend. The first run downloads u2net.onnx to ~/.u2net."
+    }
+  ]
+}

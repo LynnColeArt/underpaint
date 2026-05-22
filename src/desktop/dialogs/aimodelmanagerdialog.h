@@ -13,9 +13,11 @@ public:
 	explicit AiModelManagerDialog(QWidget *parent = nullptr);
 
 private:
+	void addRegistryModels();
 	void addModelRole(
 		const QString &role, const QString &purpose,
-		const QString &target, const QString &status, const QString &notes);
+		const QString &target, const QString &backend, const QString &status,
+		const QString &notes);
 
 	QTableWidget *m_table;
 };

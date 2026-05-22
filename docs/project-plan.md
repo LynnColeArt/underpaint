@@ -60,7 +60,7 @@ Tasks:
 
 - Keep layers, canvas, masks, and collaboration substrate intact.
 - Introduce restoration-oriented wording and layout.
-- Add top-level AI/restoration actions as intentional user-triggered entry
+- Add top-level Power Tools/restoration actions as intentional user-triggered entry
   points.
 - Add a first-step flow for opening a photo.
 - Preserve advanced drawing tools where they help mask/repair workflows.
@@ -220,6 +220,15 @@ Acceptance criteria:
 
 - User can create a guide map and select it as guidance for a generation.
 - The user never has to assemble a node graph.
+
+## Future Feature Request: Cross-Platform AI Runtimes
+
+Status: captured in `docs/platform-runtime-feature-request.md`.
+
+Goal: support Windows, Linux, and macOS as first-class Underpaint platforms
+without forcing every machine through the same AI backend.
+
+This should follow the first titular underpainting/layer decomposition workflow.
 
 ## Milestone 10: Agents And Collaboration
 
