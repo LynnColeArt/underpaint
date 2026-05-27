@@ -4631,6 +4631,7 @@ struct InpaintOptions {
 	QString scheduler = QStringLiteral("dpmpp-3m-karras");
 	QString samplerPreset = QStringLiteral("balanced");
 	bool refinerEnabled = false;
+	QString refinerPlacement = QStringLiteral("before-detail");
 	bool detailPassEnabled = false;
 	int candidateCount = 3;
 	int edgeFeatherPx = 24;
@@ -4645,6 +4646,7 @@ struct RefinerOptions {
 	int steps = 20;
 	bool inheritSampler = true;
 	QString scheduler = QStringLiteral("dpmpp-3m-karras");
+	QString placement = QStringLiteral("before-detail");
 };
 
 struct AiRegistryModel {
@@ -4680,10 +4682,37 @@ struct ColorSeparationOptions {
 };
 
 struct ObjectDecompositionOptions {
-	int maxMasks = 24;
-	int minRegionAreaPct = 1;
-	QString decompositionDepth = QStringLiteral("balanced");
+	QString segmentationBackend = QStringLiteral("sam");
+	int maxMasks = 64;
+	double minRegionAreaPct = 0.12;
+	QString decompositionDepth = QStringLiteral("detailed");
+	bool personPriorEnabled = true;
+	int personPriorConfidencePct = 5;
+	int personPriorMaxRegions = 64;
+	double personPriorMinAreaPct = 0.05;
+	bool objectPriorEnabled = true;
+	int objectPriorConfidencePct = 12;
+	int objectPriorMaxRegions = 64;
+	double objectPriorMinAreaPct = 0.03;
+	bool samGridFallbackEnabled = true;
 	bool groupRepeatedRegions = true;
+	bool repairBase = false;
+};
+
+struct ObjectDecompositionRunResult {
+	ai::JobRunResult decomposition;
+	ai::JobRunResult repair;
+	bool repairRequested = false;
+	bool repairAttempted = false;
+	bool repairMaskFallbackUsed = false;
+	bool semanticHelperAttempted = false;
+	int semanticRegionsClassified = 0;
+	int semanticRegionsFailed = 0;
+	int semanticGroupsRefined = 0;
+	QString semanticFatalError;
+	QString semanticLastError;
+	QString repairSourcePath;
+	QString repairMaskPath;
 };
 
 struct SamplerPreset {
@@ -4941,6 +4970,20 @@ RefinerOptions defaultRefinerOptions()
 	return RefinerOptions{};
 }
 
+QString normalizeRefinerPlacement(const QString &placement)
+{
+	return placement == QStringLiteral("after-detail")
+			   ? QStringLiteral("after-detail")
+			   : QStringLiteral("before-detail");
+}
+
+QString refinerPlacementLabel(const QString &placement)
+{
+	return normalizeRefinerPlacement(placement) == QStringLiteral("after-detail")
+			   ? MainWindow::tr("after detailer")
+			   : MainWindow::tr("before detailer");
+}
+
 RefinerOptions loadRefinerOptions()
 {
 	RefinerOptions defaults = defaultRefinerOptions();
@@ -4964,6 +5007,8 @@ RefinerOptions loadRefinerOptions()
 			.toBool();
 	options.scheduler =
 		settings.value(QStringLiteral("scheduler"), defaults.scheduler).toString();
+	options.placement = normalizeRefinerPlacement(
+		settings.value(QStringLiteral("placement"), defaults.placement).toString());
 	settings.endGroup();
 
 	if(options.model.trimmed().isEmpty()) {
@@ -5002,24 +5047,20 @@ void saveRefinerOptions(const RefinerOptions &options)
 	settings.setValue(QStringLiteral("steps"), options.steps);
 	settings.setValue(QStringLiteral("inheritSampler"), options.inheritSampler);
 	settings.setValue(QStringLiteral("scheduler"), options.scheduler);
+	settings.setValue(
+		QStringLiteral("placement"), normalizeRefinerPlacement(options.placement));
 	settings.endGroup();
-}
-
-void saveRefinerEnabled(bool enabled)
-{
-	RefinerOptions options = loadRefinerOptions();
-	options.enabled = enabled;
-	saveRefinerOptions(options);
 }
 
 QString refinerSummary(const RefinerOptions &options)
 {
 	return options.enabled
-			   ? MainWindow::tr("On: %1 via %2, strength %3, %4 steps")
+			   ? MainWindow::tr("On: %1 via %2, strength %3, %4 steps, %5")
 					 .arg(options.model)
 					 .arg(options.backend)
 					 .arg(options.strength, 0, 'f', 2)
 					 .arg(options.steps)
+					 .arg(refinerPlacementLabel(options.placement))
 			   : MainWindow::tr("Off");
 }
 
@@ -5286,6 +5327,7 @@ QJsonObject refinerParameters(bool enabled, const QString &jobScheduler)
 		{QStringLiteral("steps"), options.steps},
 		{QStringLiteral("scheduler"), scheduler},
 		{QStringLiteral("inheritSampler"), options.inheritSampler},
+		{QStringLiteral("placement"), normalizeRefinerPlacement(options.placement)},
 	};
 }
 
@@ -5321,8 +5363,9 @@ bool showRefinerSettingsDialog(QWidget *parent)
 	QVBoxLayout *layout = new QVBoxLayout(&dialog);
 	QLabel *summary = new QLabel(
 		MainWindow::tr(
-			"Configure the optional SDXL refiner stage that runs after the base "
-			"candidate and before targeted face/body detail passes."),
+			"Configure the optional SDXL refiner stage. The refiner can run before "
+			"the targeted face/body detailer, or after it when you want one final "
+			"global polish pass."),
 		&dialog);
 	summary->setWordWrap(true);
 	layout->addWidget(summary);
@@ -5368,10 +5411,19 @@ bool showRefinerSettingsDialog(QWidget *parent)
 		new QCheckBox(MainWindow::tr("Use the inpaint sampler"), generationGroup);
 	QComboBox *scheduler = new QComboBox(generationGroup);
 	addSchedulerChoices(scheduler);
+	QComboBox *placement = new QComboBox(generationGroup);
+	placement->addItem(
+		MainWindow::tr("Before detailer"), QStringLiteral("before-detail"));
+	placement->addItem(
+		MainWindow::tr("After detailer"), QStringLiteral("after-detail"));
+	placement->setToolTip(MainWindow::tr(
+		"Before detailer keeps detected faces, bodies, and hands as the final "
+		"targeted pass. After detailer applies one final whole-image polish."));
 	generationForm->addRow(MainWindow::tr("Strength"), strengthSlider);
 	generationForm->addRow(MainWindow::tr("Steps"), stepsSlider);
 	generationForm->addRow(QString(), inheritSampler);
 	generationForm->addRow(MainWindow::tr("Sampler"), scheduler);
+	generationForm->addRow(MainWindow::tr("Run order"), placement);
 	layout->addWidget(generationGroup);
 
 	auto applyOptionsToControls = [&] (const RefinerOptions &options) {
@@ -5386,6 +5438,9 @@ bool showRefinerSettingsDialog(QWidget *parent)
 		inheritSampler->setChecked(options.inheritSampler);
 		selectScheduler(scheduler, options.scheduler);
 		scheduler->setEnabled(!options.inheritSampler);
+		const int placementIndex =
+			placement->findData(normalizeRefinerPlacement(options.placement));
+		placement->setCurrentIndex(placementIndex >= 0 ? placementIndex : 0);
 	};
 
 	QObject::connect(
@@ -5436,6 +5491,7 @@ bool showRefinerSettingsDialog(QWidget *parent)
 	options.steps = steps->value();
 	options.inheritSampler = inheritSampler->isChecked();
 	options.scheduler = scheduler->currentData().toString();
+	options.placement = normalizeRefinerPlacement(placement->currentData().toString());
 	saveRefinerOptions(options);
 	return true;
 }
@@ -5681,6 +5737,179 @@ QImage alphaImageToInpaintMask(
 	return inpaintMask;
 }
 
+bool candidateIsExtractedObject(const ai::JobCandidate &candidate)
+{
+	return candidate.metadata.value(QStringLiteral("maskRole")).toString() ==
+		   QStringLiteral("extracted-object");
+}
+
+bool candidateIsBaseRemainder(const ai::JobCandidate &candidate)
+{
+	return candidate.metadata.value(QStringLiteral("maskRole")).toString() ==
+		   QStringLiteral("base-remainder");
+}
+
+QString candidateRepairRole(const ai::JobCandidate &candidate)
+{
+	const QString repairRole =
+		candidate.metadata.value(QStringLiteral("repairRole")).toString().trimmed();
+	return repairRole.isEmpty() ? QStringLiteral("remove-from-base") : repairRole;
+}
+
+bool candidateKeepsRepairContext(const ai::JobCandidate &candidate)
+{
+	const QString maskRole =
+		candidate.metadata.value(QStringLiteral("maskRole")).toString();
+	return maskRole == QStringLiteral("base-remainder") ||
+		   candidateRepairRole(candidate) == QStringLiteral("keep-context");
+}
+
+bool imageHasVisibleAlpha(const QImage &image)
+{
+	if(image.isNull()) {
+		return false;
+	}
+	const QImage rgba = image.convertToFormat(QImage::Format_ARGB32);
+	for(int y = 0; y < rgba.height(); ++y) {
+		const QRgb *line = reinterpret_cast<const QRgb *>(rgba.constScanLine(y));
+		for(int x = 0; x < rgba.width(); ++x) {
+			if(qAlpha(line[x]) > 0) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+QImage objectDecompositionRepairSourcePlate(
+	const QVector<ai::JobCandidate> &candidates, const QSize &canvasSize)
+{
+	if(candidates.isEmpty() || canvasSize.isEmpty()) {
+		return QImage();
+	}
+	QImage plate(canvasSize, QImage::Format_ARGB32_Premultiplied);
+	plate.fill(Qt::transparent);
+	QPainter painter(&plate);
+	for(const ai::JobCandidate &candidate : candidates) {
+		if(!candidateKeepsRepairContext(candidate)) {
+			continue;
+		}
+		QImage image(candidate.imagePath);
+		if(image.isNull()) {
+			continue;
+		}
+		if(image.size() != canvasSize) {
+			image = image.scaled(
+				canvasSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+		}
+		painter.drawImage(QPoint(0, 0), image);
+	}
+	painter.end();
+	return imageHasVisibleAlpha(plate) ? plate : QImage();
+}
+
+QImage expandGrayscaleMask(
+	const QImage &mask, int radius, int alphaThreshold);
+
+QImage objectDecompositionRepairMask(
+	const QVector<ai::JobCandidate> &candidates, const QSize &canvasSize,
+	bool includeKeepContextObjects = false)
+{
+	if(candidates.isEmpty() || canvasSize.isEmpty()) {
+		return QImage();
+	}
+	QImage repairMask(canvasSize, QImage::Format_Grayscale8);
+	repairMask.fill(0);
+	bool hasPixels = false;
+	const int expandPx =
+		qMax(4, qMin(14, (qMin(canvasSize.width(), canvasSize.height()) + 191) / 192));
+	for(const ai::JobCandidate &candidate : candidates) {
+		if(!candidateIsExtractedObject(candidate) ||
+		   (!includeKeepContextObjects && candidateKeepsRepairContext(candidate))) {
+			continue;
+		}
+		QImage candidateMask(candidate.maskPath);
+		if(candidateMask.isNull()) {
+			continue;
+		}
+		if(candidateMask.size() != canvasSize) {
+			candidateMask = candidateMask.scaled(
+				canvasSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+		}
+		const QImage sourceMask = expandGrayscaleMask(candidateMask, expandPx, 8);
+		for(int y = 0; y < repairMask.height(); ++y) {
+			uchar *out = repairMask.scanLine(y);
+			const uchar *in = sourceMask.constScanLine(y);
+			for(int x = 0; x < repairMask.width(); ++x) {
+				if(in[x] > out[x]) {
+					out[x] = in[x];
+					hasPixels = true;
+				}
+			}
+		}
+	}
+	return hasPixels ? repairMask : QImage();
+}
+
+QStringList decompositionPromptPhrases(
+	const QVector<ai::JobCandidate> &candidates, bool keepContext)
+{
+	QStringList phrases;
+	for(const ai::JobCandidate &candidate : candidates) {
+		if(!candidateIsExtractedObject(candidate)) {
+			continue;
+		}
+		const bool keepsContext = candidateKeepsRepairContext(candidate);
+		if(keepsContext != keepContext) {
+			continue;
+		}
+		QString phrase =
+			candidate.metadata.value(QStringLiteral("promptPhrase"))
+				.toString()
+				.simplified()
+				.trimmed();
+		if(phrase.isEmpty()) {
+			phrase = candidate.label.simplified().trimmed();
+		}
+		if(!phrase.isEmpty() && !phrases.contains(phrase, Qt::CaseInsensitive)) {
+			phrases.append(phrase);
+		}
+		if(phrases.size() >= 8) {
+			break;
+		}
+	}
+	return phrases;
+}
+
+QString objectDecompositionRepairPrompt(
+	const QVector<ai::JobCandidate> &candidates)
+{
+	const QStringList contextPhrases = decompositionPromptPhrases(candidates, true);
+	QString prompt = MainWindow::tr(
+		"continue the visible background plate into the removed foreground holes, "
+		"matching perspective, color, lighting, texture, and painted detail; "
+		"do not invent new people, clothing, limbs, shoes, props, or foreground objects");
+	if(!contextPhrases.isEmpty()) {
+		prompt += MainWindow::tr("; use context from %1")
+					  .arg(contextPhrases.join(QStringLiteral(", ")));
+	}
+	return prompt;
+}
+
+QString objectDecompositionRepairNegativePrompt(
+	const QVector<ai::JobCandidate> &candidates)
+{
+	QStringList negative = decompositionPromptPhrases(candidates, false);
+	negative.prepend(MainWindow::tr("new shoes"));
+	negative.prepend(MainWindow::tr("new clothing"));
+	negative.prepend(MainWindow::tr("extra limbs"));
+	negative.prepend(MainWindow::tr("extra people"));
+	negative.prepend(MainWindow::tr("duplicate foreground objects"));
+	negative.prepend(MainWindow::tr("floating cutout artifacts"));
+	negative.removeDuplicates();
+	return negative.join(QStringLiteral(", "));
+}
+
 QImage transparentPixelsToOutpaintMask(
 	const QImage &image, const QRect &exportRegion, int alphaThreshold = 8,
 	int contextBleedPx = 0)
@@ -5765,6 +5994,65 @@ bool maskHasEditablePixels(const QImage &mask)
 		}
 	}
 	return false;
+}
+
+QImage expandGrayscaleMask(
+	const QImage &mask, int radius, int alphaThreshold)
+{
+	QImage source = mask.convertToFormat(QImage::Format_Grayscale8);
+	if(source.isNull() || radius <= 0) {
+		return source;
+	}
+	const int width = source.width();
+	const int height = source.height();
+	const int unreachable = width + height + radius + 1;
+	QVector<int> distance(width * height, unreachable);
+	bool hasPixels = false;
+	for(int y = 0; y < height; ++y) {
+		const uchar *line = source.constScanLine(y);
+		for(int x = 0; x < width; ++x) {
+			if(line[x] > alphaThreshold) {
+				distance[y * width + x] = 0;
+				hasPixels = true;
+			}
+		}
+	}
+	if(!hasPixels) {
+		return source;
+	}
+	for(int y = 0; y < height; ++y) {
+		for(int x = 0; x < width; ++x) {
+			int &value = distance[y * width + x];
+			if(x > 0) {
+				value = qMin(value, distance[y * width + x - 1] + 1);
+			}
+			if(y > 0) {
+				value = qMin(value, distance[(y - 1) * width + x] + 1);
+			}
+		}
+	}
+	for(int y = height - 1; y >= 0; --y) {
+		for(int x = width - 1; x >= 0; --x) {
+			int &value = distance[y * width + x];
+			if(x + 1 < width) {
+				value = qMin(value, distance[y * width + x + 1] + 1);
+			}
+			if(y + 1 < height) {
+				value = qMin(value, distance[(y + 1) * width + x] + 1);
+			}
+		}
+	}
+	QImage expanded(source.size(), QImage::Format_Grayscale8);
+	expanded.fill(0);
+	for(int y = 0; y < height; ++y) {
+		uchar *out = expanded.scanLine(y);
+		for(int x = 0; x < width; ++x) {
+			if(distance[y * width + x] <= radius) {
+				out[x] = 255;
+			}
+		}
+	}
+	return expanded;
 }
 
 int parentGroupIdForLayer(canvas::LayerListModel *layers, int layerId)
@@ -6093,6 +6381,488 @@ QString labelDecompositionRegionWithHelper(
 	return label;
 }
 
+bool decompositionSemanticHelperEnabled()
+{
+	const QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+	return !env.value(QStringLiteral("UNDERPAINT_PROMPT_HELPER_URL")).isEmpty() ||
+		   !env.value(QStringLiteral("QWENCH_OPENAI_URL")).isEmpty() ||
+		   !env.value(QStringLiteral("OPENAI_COMPAT_URL")).isEmpty() ||
+		   env.value(QStringLiteral("UNDERPAINT_USE_QWENCH_PROMPT_HELPER")) ==
+			   QStringLiteral("1");
+}
+
+bool checkDecompositionSemanticHelper(QString &outError)
+{
+	const QString scriptPath =
+		QProcessEnvironment::systemEnvironment().value(
+			QStringLiteral("UNDERPAINT_PROMPT_HELPER"),
+			underpaintToolPath(
+				QStringLiteral("tools/ai/underpaint-prompt-helper.py")));
+	if(!QFile::exists(scriptPath)) {
+		outError = MainWindow::tr("Prompt helper was not found: %1").arg(scriptPath);
+		return false;
+	}
+
+	QProcess process;
+	process.setProgram(underpaintPythonPath());
+	process.setArguments({scriptPath});
+	process.setProcessChannelMode(QProcess::SeparateChannels);
+	process.start();
+	if(!process.waitForStarted(3000)) {
+		outError = process.errorString();
+		return false;
+	}
+	QJsonObject payload{
+		{QStringLiteral("operation"), QStringLiteral("helper-health-check")},
+	};
+	process.write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+	process.closeWriteChannel();
+	if(!process.waitForFinished(8000)) {
+		process.kill();
+		process.waitForFinished(1000);
+		outError = MainWindow::tr("Prompt helper health check timed out.");
+		return false;
+	}
+
+	const QByteArray stderrBytes = process.readAllStandardError();
+	QJsonParseError parseError;
+	const QJsonDocument document = QJsonDocument::fromJson(
+		process.readAllStandardOutput(), &parseError);
+	if(process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+		outError = QString::fromUtf8(stderrBytes).trimmed();
+		if(outError.isEmpty()) {
+			outError = MainWindow::tr("Prompt helper exited with code %1.")
+						   .arg(process.exitCode());
+		}
+		return false;
+	}
+	if(parseError.error != QJsonParseError::NoError || !document.isObject()) {
+		outError = MainWindow::tr("Prompt helper returned invalid JSON.");
+		return false;
+	}
+
+	const QJsonObject response = document.object();
+	if(!response.value(QStringLiteral("ok")).toBool()) {
+		outError = response.value(QStringLiteral("error"))
+					   .toString(MainWindow::tr("Prompt helper is unavailable."));
+		return false;
+	}
+	return true;
+}
+
+QString fallbackSemanticGroup(
+	const QString &depthRole, const QString &sceneRole, const QString &repairRole)
+{
+	if(depthRole == QStringLiteral("sky-horizon")) {
+		return MainWindow::tr("Sky / Horizon");
+	}
+	if(repairRole == QStringLiteral("keep-context") ||
+	   depthRole == QStringLiteral("background")) {
+		return MainWindow::tr("Background Context");
+	}
+	if(sceneRole == QStringLiteral("subject")) {
+		return MainWindow::tr("Foreground Subjects");
+	}
+	if(sceneRole == QStringLiteral("prop")) {
+		return MainWindow::tr("Foreground Props");
+	}
+	if(sceneRole == QStringLiteral("structure")) {
+		return MainWindow::tr("Foreground Structure");
+	}
+	return MainWindow::tr("Foreground Objects");
+}
+
+QString normalizedSemanticChoice(
+	const QJsonObject &object, const QString &key, const QStringList &allowed,
+	const QString &fallback)
+{
+	const QString value = object.value(key).toString().trimmed().toLower();
+	return allowed.contains(value) ? value : fallback;
+}
+
+QString cleanPromptPhrase(const QString &text, const QString &fallback)
+{
+	QString phrase = text.simplified().trimmed();
+	if(phrase.isEmpty()) {
+		phrase = fallback.simplified().trimmed();
+	}
+	if(phrase.size() > 120) {
+		phrase = phrase.left(120).trimmed();
+	}
+	return phrase;
+}
+
+QJsonObject defaultDecompositionSemantics(const ai::JobCandidate &candidate)
+{
+	const bool baseRemainder = candidateIsBaseRemainder(candidate);
+	const QString name = baseRemainder
+							 ? MainWindow::tr("Base Remainder")
+							 : cleanLayerNameFromHelper(candidate.label);
+	const QString depthRole =
+		baseRemainder ? QStringLiteral("background") : QStringLiteral("foreground");
+	const QString sceneRole =
+		baseRemainder ? QStringLiteral("scenery") : QStringLiteral("object");
+	const QString repairRole = baseRemainder ? QStringLiteral("keep-context")
+											 : QStringLiteral("remove-from-base");
+	return QJsonObject{
+		{QStringLiteral("name"),
+		 name.isEmpty() ? QStringLiteral("Object") : name},
+		{QStringLiteral("depthRole"), depthRole},
+		{QStringLiteral("sceneRole"), sceneRole},
+		{QStringLiteral("repairRole"), repairRole},
+		{QStringLiteral("group"),
+		 baseRemainder ? MainWindow::tr("Base Remainder")
+					   : fallbackSemanticGroup(depthRole, sceneRole, repairRole)},
+		{QStringLiteral("promptPhrase"),
+		 cleanPromptPhrase(candidate.label, name)},
+		{QStringLiteral("confidence"), 0.0},
+	};
+}
+
+QJsonObject normalizeDecompositionSemantics(
+	const ai::JobCandidate &candidate, const QJsonObject &raw)
+{
+	QJsonObject defaults = defaultDecompositionSemantics(candidate);
+	const QString name = cleanLayerNameFromHelper(
+		raw.value(QStringLiteral("name")).toString(
+			defaults.value(QStringLiteral("name")).toString()));
+	const QString depthRole = normalizedSemanticChoice(
+		raw, QStringLiteral("depthRole"),
+		{QStringLiteral("foreground"), QStringLiteral("midground"),
+		 QStringLiteral("background"), QStringLiteral("sky-horizon"),
+		 QStringLiteral("ambiguous")},
+		defaults.value(QStringLiteral("depthRole")).toString());
+	const QString sceneRole = raw.value(QStringLiteral("sceneRole"))
+								  .toString(
+									  defaults.value(QStringLiteral("sceneRole"))
+										  .toString())
+								  .trimmed()
+								  .toLower();
+	QString repairRole = normalizedSemanticChoice(
+		raw, QStringLiteral("repairRole"),
+		{QStringLiteral("keep-context"), QStringLiteral("remove-from-base"),
+		 QStringLiteral("ambiguous")},
+		defaults.value(QStringLiteral("repairRole")).toString());
+	if(repairRole == QStringLiteral("ambiguous")) {
+		repairRole =
+			(depthRole == QStringLiteral("background") ||
+			 depthRole == QStringLiteral("sky-horizon"))
+				? QStringLiteral("keep-context")
+				: QStringLiteral("remove-from-base");
+	}
+	const QString group =
+		raw.value(QStringLiteral("group")).toString().simplified().trimmed();
+	const QString promptPhrase = cleanPromptPhrase(
+		raw.value(QStringLiteral("promptPhrase")).toString(), name);
+	const double confidence =
+		qBound(0.0, raw.value(QStringLiteral("confidence")).toDouble(0.0), 1.0);
+	return QJsonObject{
+		{QStringLiteral("name"),
+		 name.isEmpty() ? defaults.value(QStringLiteral("name")).toString() : name},
+		{QStringLiteral("depthRole"), depthRole},
+		{QStringLiteral("sceneRole"),
+		 sceneRole.isEmpty() ? QStringLiteral("ambiguous") : sceneRole},
+		{QStringLiteral("repairRole"), repairRole},
+		{QStringLiteral("group"),
+		 group.isEmpty() ? fallbackSemanticGroup(depthRole, sceneRole, repairRole)
+						 : group},
+		{QStringLiteral("promptPhrase"), promptPhrase},
+		{QStringLiteral("confidence"), confidence},
+	};
+}
+
+void applyDecompositionSemantics(
+	ai::JobCandidate &candidate, const QJsonObject &semantics,
+	const QString &status)
+{
+	QJsonObject metadata = candidate.metadata;
+	metadata.insert(
+		QStringLiteral("semanticName"),
+		semantics.value(QStringLiteral("name")).toString());
+	metadata.insert(
+		QStringLiteral("depthRole"),
+		semantics.value(QStringLiteral("depthRole")).toString());
+	metadata.insert(
+		QStringLiteral("sceneRole"),
+		semantics.value(QStringLiteral("sceneRole")).toString());
+	metadata.insert(
+		QStringLiteral("repairRole"),
+		semantics.value(QStringLiteral("repairRole")).toString());
+	metadata.insert(
+		QStringLiteral("promptPhrase"),
+		semantics.value(QStringLiteral("promptPhrase")).toString());
+	metadata.insert(
+		QStringLiteral("semanticConfidence"),
+		semantics.value(QStringLiteral("confidence")).toDouble());
+	metadata.insert(QStringLiteral("helperStatus"), status);
+	const QString group = semantics.value(QStringLiteral("group")).toString();
+	if(!group.isEmpty()) {
+		metadata.insert(QStringLiteral("groupLabel"), group);
+	}
+	candidate.metadata = metadata;
+	const QString name = semantics.value(QStringLiteral("name")).toString();
+	if(!name.isEmpty()) {
+		candidate.label = name;
+	}
+}
+
+QJsonObject classifyDecompositionRegionWithHelper(
+	const ai::JobCandidate &candidate, const QString &sourceImagePath,
+	QString &outError)
+{
+	if(!decompositionSemanticHelperEnabled()) {
+		outError = MainWindow::tr("Vision helper is not configured.");
+		return QJsonObject();
+	}
+	const QString scriptPath =
+		QProcessEnvironment::systemEnvironment().value(
+			QStringLiteral("UNDERPAINT_PROMPT_HELPER"),
+			underpaintToolPath(
+				QStringLiteral("tools/ai/underpaint-prompt-helper.py")));
+	if(!QFile::exists(scriptPath)) {
+		outError = MainWindow::tr("Prompt helper was not found: %1").arg(scriptPath);
+		return QJsonObject();
+	}
+	if(candidate.imagePath.isEmpty()) {
+		outError = MainWindow::tr("Candidate has no image path.");
+		return QJsonObject();
+	}
+
+	QJsonObject payload{
+		{QStringLiteral("operation"),
+		 QStringLiteral("decomposition-region-classify")},
+		{QStringLiteral("id"), candidate.id},
+		{QStringLiteral("prompt"), candidate.label},
+		{QStringLiteral("sourceImagePath"), sourceImagePath},
+		{QStringLiteral("imagePath"), candidate.imagePath},
+		{QStringLiteral("groupLabel"),
+		 candidate.metadata.value(QStringLiteral("groupLabel")).toString()},
+		{QStringLiteral("regionIndex"),
+		 candidate.metadata.value(QStringLiteral("regionIndex")).toInt()},
+		{QStringLiteral("regionCount"),
+		 candidate.metadata.value(QStringLiteral("regionCount")).toInt()},
+	};
+
+	QProcess process;
+	process.setProgram(underpaintPythonPath());
+	process.setArguments({scriptPath});
+	process.setProcessChannelMode(QProcess::SeparateChannels);
+	process.start();
+	if(!process.waitForStarted(3000)) {
+		outError = process.errorString();
+		return QJsonObject();
+	}
+	process.write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+	process.closeWriteChannel();
+	if(!process.waitForFinished(60000)) {
+		process.kill();
+		process.waitForFinished(1000);
+		outError = MainWindow::tr("Prompt helper timed out.");
+		return QJsonObject();
+	}
+
+	const QByteArray stderrBytes = process.readAllStandardError();
+	QJsonParseError parseError;
+	const QJsonDocument document = QJsonDocument::fromJson(
+		process.readAllStandardOutput(), &parseError);
+	if(process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+		outError = QString::fromUtf8(stderrBytes).trimmed();
+		if(outError.isEmpty()) {
+			outError = MainWindow::tr("Prompt helper exited with code %1.")
+						   .arg(process.exitCode());
+		}
+		return QJsonObject();
+	}
+	if(parseError.error != QJsonParseError::NoError || !document.isObject()) {
+		outError = MainWindow::tr("Prompt helper returned invalid JSON.");
+		return QJsonObject();
+	}
+
+	const QJsonObject response = document.object();
+	if(!response.value(QStringLiteral("ok")).toBool()) {
+		outError = response.value(QStringLiteral("error"))
+					   .toString(MainWindow::tr("Prompt helper failed."));
+		return QJsonObject();
+	}
+	const QJsonObject classification =
+		response.value(QStringLiteral("classification")).toObject();
+	if(classification.isEmpty()) {
+		outError = MainWindow::tr("Prompt helper returned no classification.");
+		return QJsonObject();
+	}
+	return normalizeDecompositionSemantics(candidate, classification);
+}
+
+QJsonArray decompositionGroupRefinementRegions(
+	const QVector<ai::JobCandidate> &candidates)
+{
+	QJsonArray regions;
+	for(const ai::JobCandidate &candidate : candidates) {
+		if(!candidateIsExtractedObject(candidate)) {
+			continue;
+		}
+		const QJsonObject metadata = candidate.metadata;
+		regions.append(QJsonObject{
+			{QStringLiteral("id"), candidate.id},
+			{QStringLiteral("candidateId"), candidate.id},
+			{QStringLiteral("regionIndex"),
+			 metadata.value(QStringLiteral("regionIndex")).toInt()},
+			{QStringLiteral("name"), candidate.label},
+			{QStringLiteral("group"),
+			 metadata.value(QStringLiteral("groupLabel")).toString()},
+			{QStringLiteral("depthRole"),
+			 metadata.value(QStringLiteral("depthRole")).toString()},
+			{QStringLiteral("sceneRole"),
+			 metadata.value(QStringLiteral("sceneRole")).toString()},
+			{QStringLiteral("repairRole"),
+			 metadata.value(QStringLiteral("repairRole")).toString()},
+			{QStringLiteral("promptPhrase"),
+			 metadata.value(QStringLiteral("promptPhrase")).toString()},
+			{QStringLiteral("areaRatio"),
+			 metadata.value(QStringLiteral("areaRatio")).toDouble()},
+			{QStringLiteral("bounds"), metadata.value(QStringLiteral("bounds"))},
+		});
+	}
+	return regions;
+}
+
+int applyDecompositionGroupRefinements(
+	QVector<ai::JobCandidate> &candidates, const QJsonArray &regions)
+{
+	int updated = 0;
+	for(const QJsonValue &value : regions) {
+		if(!value.isObject()) {
+			continue;
+		}
+		const QJsonObject item = value.toObject();
+		const QString id =
+			item.value(QStringLiteral("id")).toString().simplified().trimmed();
+		const int regionIndex =
+			item.value(QStringLiteral("regionIndex")).toInt(-1);
+		if(id.isEmpty() && regionIndex < 0) {
+			continue;
+		}
+		const QString name =
+			cleanLayerNameFromHelper(item.value(QStringLiteral("name")).toString());
+		const QString group =
+			cleanLayerNameFromHelper(item.value(QStringLiteral("group")).toString());
+		const QString promptPhrase =
+			cleanPromptPhrase(item.value(QStringLiteral("promptPhrase")).toString(), name);
+		for(ai::JobCandidate &candidate : candidates) {
+			if(!candidateIsExtractedObject(candidate)) {
+				continue;
+			}
+			const bool idMatches = !id.isEmpty() && candidate.id == id;
+			const bool indexMatches =
+				id.isEmpty() &&
+				candidate.metadata.value(QStringLiteral("regionIndex")).toInt(-1) ==
+					regionIndex;
+			if(!idMatches && !indexMatches) {
+				continue;
+			}
+			bool changed = false;
+			QJsonObject metadata = candidate.metadata;
+			const bool mayRename =
+				metadata.value(QStringLiteral("helperStatus")).toString() !=
+					QStringLiteral("semantic-helper") ||
+				candidate.label.startsWith(QStringLiteral("Object "));
+			if(mayRename && !name.isEmpty() && name != candidate.label) {
+				candidate.label = name;
+				metadata.insert(QStringLiteral("semanticName"), name);
+				changed = true;
+			}
+			if(!group.isEmpty() &&
+			   metadata.value(QStringLiteral("groupLabel")).toString() != group) {
+				metadata.insert(QStringLiteral("groupLabel"), group);
+				metadata.insert(QStringLiteral("semanticGroupRefined"), true);
+				changed = true;
+			}
+			if(!promptPhrase.isEmpty() &&
+			   metadata.value(QStringLiteral("promptPhrase")).toString() !=
+				   promptPhrase) {
+				metadata.insert(QStringLiteral("promptPhrase"), promptPhrase);
+				changed = true;
+			}
+			if(changed) {
+				candidate.metadata = metadata;
+				++updated;
+			}
+			break;
+		}
+	}
+	return updated;
+}
+
+int refineDecompositionGroupsWithHelper(
+	QVector<ai::JobCandidate> &candidates, const QString &sourceImagePath,
+	QString &outError)
+{
+	const QJsonArray regions = decompositionGroupRefinementRegions(candidates);
+	if(regions.isEmpty()) {
+		return 0;
+	}
+	const QString scriptPath =
+		QProcessEnvironment::systemEnvironment().value(
+			QStringLiteral("UNDERPAINT_PROMPT_HELPER"),
+			underpaintToolPath(
+				QStringLiteral("tools/ai/underpaint-prompt-helper.py")));
+	if(!QFile::exists(scriptPath)) {
+		outError = MainWindow::tr("Prompt helper was not found: %1").arg(scriptPath);
+		return 0;
+	}
+
+	QJsonObject payload{
+		{QStringLiteral("operation"),
+		 QStringLiteral("decomposition-group-refine")},
+		{QStringLiteral("sourceImagePath"), sourceImagePath},
+		{QStringLiteral("regions"), regions},
+	};
+
+	QProcess process;
+	process.setProgram(underpaintPythonPath());
+	process.setArguments({scriptPath});
+	process.setProcessChannelMode(QProcess::SeparateChannels);
+	process.start();
+	if(!process.waitForStarted(3000)) {
+		outError = process.errorString();
+		return 0;
+	}
+	process.write(QJsonDocument(payload).toJson(QJsonDocument::Compact));
+	process.closeWriteChannel();
+	if(!process.waitForFinished(90000)) {
+		process.kill();
+		process.waitForFinished(1000);
+		outError = MainWindow::tr("Prompt helper group refinement timed out.");
+		return 0;
+	}
+
+	const QByteArray stderrBytes = process.readAllStandardError();
+	QJsonParseError parseError;
+	const QJsonDocument document = QJsonDocument::fromJson(
+		process.readAllStandardOutput(), &parseError);
+	if(process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+		outError = QString::fromUtf8(stderrBytes).trimmed();
+		if(outError.isEmpty()) {
+			outError = MainWindow::tr("Prompt helper exited with code %1.")
+						   .arg(process.exitCode());
+		}
+		return 0;
+	}
+	if(parseError.error != QJsonParseError::NoError || !document.isObject()) {
+		outError = MainWindow::tr("Prompt helper returned invalid JSON.");
+		return 0;
+	}
+
+	const QJsonObject response = document.object();
+	if(!response.value(QStringLiteral("ok")).toBool()) {
+		outError = response.value(QStringLiteral("error"))
+					   .toString(MainWindow::tr("Prompt helper failed."));
+		return 0;
+	}
+	return applyDecompositionGroupRefinements(
+		candidates, response.value(QStringLiteral("regions")).toArray());
+}
+
 bool showInpaintOptionsDialog(
 	QWidget *parent, const QRect &region, InpaintOptions &options,
 	const QString &windowTitle, const QString &regionLabelText,
@@ -6159,23 +6929,46 @@ bool showInpaintOptionsDialog(
 			: options.samplerPreset;
 	selectSamplerPreset(samplerPreset, initialPreset);
 
-	QCheckBox *refiner = new QCheckBox(
-		MainWindow::tr("Run refiner before detail pass"), &dialog);
+	QCheckBox *refiner = new QCheckBox(MainWindow::tr("Use SDXL refiner"), &dialog);
 	refiner->setChecked(options.refinerEnabled);
 	refiner->setToolTip(
-		MainWindow::tr("Uses the current Refiner Settings."));
+		MainWindow::tr("Uses the current Refiner Settings for global polish."));
 	QLabel *refinerLabel =
 		new QLabel(refinerSummary(loadRefinerOptions()), &dialog);
 	refinerLabel->setWordWrap(true);
+	QComboBox *refinerPlacement = new QComboBox(&dialog);
+	refinerPlacement->addItem(
+		MainWindow::tr("Before detailer"), QStringLiteral("before-detail"));
+	refinerPlacement->addItem(
+		MainWindow::tr("After detailer"), QStringLiteral("after-detail"));
+	const int refinerPlacementIndex =
+		refinerPlacement->findData(normalizeRefinerPlacement(options.refinerPlacement));
+	refinerPlacement->setCurrentIndex(
+		refinerPlacementIndex >= 0 ? refinerPlacementIndex : 0);
+	refinerPlacement->setToolTip(MainWindow::tr(
+		"Before detailer makes face/body/hands the final targeted pass. After "
+		"detailer applies one final whole-image refiner pass."));
 
 	QCheckBox *detailPass = new QCheckBox(
-		MainWindow::tr("Run detail pass after generation"), &dialog);
+		MainWindow::tr("Use face/body detailer"), &dialog);
 	detailPass->setChecked(options.detailPassEnabled);
 	detailPass->setToolTip(
-		MainWindow::tr("Uses the current Face & Body Detail Settings."));
+		MainWindow::tr(
+			"Uses the current Face & Body Detail Settings. The detail pass "
+			"only renders detected valid regions."));
 	QLabel *detailPassLabel =
 		new QLabel(detailPassSummary(loadDetailPassOptions()), &dialog);
 	detailPassLabel->setWordWrap(true);
+	auto updateRefinerPlacementEnabled = [=] {
+		refinerPlacement->setEnabled(refiner->isChecked() && detailPass->isChecked());
+	};
+	QObject::connect(
+		refiner, &QCheckBox::toggled, &dialog,
+		[updateRefinerPlacementEnabled](bool) { updateRefinerPlacementEnabled(); });
+	QObject::connect(
+		detailPass, &QCheckBox::toggled, &dialog,
+		[updateRefinerPlacementEnabled](bool) { updateRefinerPlacementEnabled(); });
+	updateRefinerPlacementEnabled();
 
 	QWidget *promptWidget = new QWidget(&dialog);
 	QHBoxLayout *promptLayout = new QHBoxLayout(promptWidget);
@@ -6305,9 +7098,10 @@ bool showInpaintOptionsDialog(
 	form->addRow(MainWindow::tr("Steps"), stepsSlider);
 	form->addRow(MainWindow::tr("Edge feather"), edgeFeatherSlider);
 	form->addRow(QString(), refiner);
-	form->addRow(MainWindow::tr("Refiner settings"), refinerLabel);
+	form->addRow(MainWindow::tr("Refiner configuration"), refinerLabel);
+	form->addRow(MainWindow::tr("Refiner order"), refinerPlacement);
 	form->addRow(QString(), detailPass);
-	form->addRow(MainWindow::tr("Detail settings"), detailPassLabel);
+	form->addRow(MainWindow::tr("Detailer configuration"), detailPassLabel);
 	layout->addLayout(form);
 
 	QDialogButtonBox *buttons = new QDialogButtonBox(
@@ -6332,7 +7126,12 @@ bool showInpaintOptionsDialog(
 	options.samplerPreset = samplerPreset->currentData().toString();
 	options.steps = steps->value();
 	options.refinerEnabled = refiner->isChecked();
-	saveRefinerEnabled(options.refinerEnabled);
+	options.refinerPlacement =
+		normalizeRefinerPlacement(refinerPlacement->currentData().toString());
+	RefinerOptions refinerOptions = loadRefinerOptions();
+	refinerOptions.enabled = options.refinerEnabled;
+	refinerOptions.placement = options.refinerPlacement;
+	saveRefinerOptions(refinerOptions);
 	options.detailPassEnabled = detailPass->isChecked();
 	saveDetailPassEnabled(options.detailPassEnabled);
 	options.edgeFeatherPx = edgeFeather->value();
@@ -6404,11 +7203,22 @@ bool showObjectDecompositionOptionsDialog(
 	layout->addWidget(sourceLabel);
 	QLabel *note = new QLabel(
 		MainWindow::tr(
-			"Separates object and part masks for movable layers. Underpaint "
-			"behind a layer or group after import to repair the base."),
+			"Separates foreground subjects, object parts, props, and background "
+			"items into movable layers for inspection and editing."),
 		&dialog);
 	note->setWordWrap(true);
 	layout->addWidget(note);
+
+	QComboBox *backend = new QComboBox(&dialog);
+	backend->addItem(
+		MainWindow::tr("Grid Pass (SAM Base)"), QStringLiteral("sam"));
+	backend->addItem(
+		MainWindow::tr("Grid Pass (HQ-SAM experimental)"), QStringLiteral("sam-hq"));
+	const int backendIndex = backend->findData(options.segmentationBackend);
+	backend->setCurrentIndex(backendIndex < 0 ? 0 : backendIndex);
+	backend->setToolTip(MainWindow::tr(
+		"Chooses the SAM-family backend used by the grid pass that finds "
+		"unlabeled pieces after detector-first decomposition."));
 
 	QComboBox *depth = new QComboBox(&dialog);
 	depth->addItem(MainWindow::tr("Clean"), QStringLiteral("clean"));
@@ -6424,17 +7234,125 @@ bool showObjectDecompositionOptionsDialog(
 		[](int v) { return QString::number(v); }, maxMasks);
 	QSlider *minRegionArea = nullptr;
 	QWidget *minRegionAreaSlider = makeIntSlider(
-		&dialog, 1, 20, options.minRegionAreaPct,
-		[](int v) { return MainWindow::tr("%1%").arg(v); }, minRegionArea);
+		&dialog, 1, 2000, qRound(options.minRegionAreaPct * 100.0),
+		[](int v) {
+			return MainWindow::tr("%1%")
+				.arg(QString::number(v / 100.0, 'f', v < 100 ? 2 : 1));
+		},
+		minRegionArea);
+	QCheckBox *personPriorEnabled = new QCheckBox(
+		MainWindow::tr("Find people first"), &dialog);
+	personPriorEnabled->setChecked(options.personPriorEnabled);
+	personPriorEnabled->setToolTip(MainWindow::tr(
+		"Uses the installed ADetailer person detector as a first pass before "
+		"SAM-family mask selection. This helps keep people together as "
+		"movable decomposition layers."));
+	QSlider *personPriorConfidence = nullptr;
+	QWidget *personPriorConfidenceSlider = makeIntSlider(
+		&dialog, 1, 90, options.personPriorConfidencePct,
+		[](int v) {
+			return MainWindow::tr("%1%").arg(v);
+		},
+		personPriorConfidence);
+	personPriorConfidenceSlider->setToolTip(MainWindow::tr(
+		"Lower values detect more people in crowded scenes. Higher values "
+		"reject more uncertain body-shaped fragments."));
+	QSlider *personPriorMaxRegions = nullptr;
+	QWidget *personPriorMaxRegionsSlider = makeIntSlider(
+		&dialog, 1, 128, options.personPriorMaxRegions,
+		[](int v) { return QString::number(v); }, personPriorMaxRegions);
+	personPriorMaxRegionsSlider->setToolTip(MainWindow::tr(
+		"Caps how many person detections can be promoted before the general "
+		"SAM mask proposals are ranked."));
+	QSlider *personPriorMinArea = nullptr;
+	QWidget *personPriorMinAreaSlider = makeIntSlider(
+		&dialog, 1, 500, qRound(options.personPriorMinAreaPct * 100.0),
+		[](int v) {
+			return MainWindow::tr("%1%")
+				.arg(QString::number(v / 100.0, 'f', v < 100 ? 2 : 1));
+		},
+		personPriorMinArea);
+	personPriorMinAreaSlider->setToolTip(MainWindow::tr(
+		"Minimum person-box size as a percentage of the source image. Crowd "
+		"photos need low values so distant figures survive."));
+	QCheckBox *objectPriorEnabled = new QCheckBox(
+		MainWindow::tr("Find common objects first"), &dialog);
+	objectPriorEnabled->setChecked(options.objectPriorEnabled);
+	objectPriorEnabled->setToolTip(MainWindow::tr(
+		"Uses a general segmentation detector before SAM-family mask fallback. "
+		"This is usually cleaner for vehicles, animals, signs, furniture, and "
+		"props."));
+	QSlider *objectPriorConfidence = nullptr;
+	QWidget *objectPriorConfidenceSlider = makeIntSlider(
+		&dialog, 1, 90, options.objectPriorConfidencePct,
+		[](int v) { return MainWindow::tr("%1%").arg(v); },
+		objectPriorConfidence);
+	objectPriorConfidenceSlider->setToolTip(MainWindow::tr(
+		"Lower values find more objects. Higher values reject uncertain "
+		"detector masks."));
+	QSlider *objectPriorMaxRegions = nullptr;
+	QWidget *objectPriorMaxRegionsSlider = makeIntSlider(
+		&dialog, 1, 128, options.objectPriorMaxRegions,
+		[](int v) { return QString::number(v); }, objectPriorMaxRegions);
+	objectPriorMaxRegionsSlider->setToolTip(MainWindow::tr(
+		"Caps how many general object detections can be promoted before "
+		"ranking and cleanup."));
+	QSlider *objectPriorMinArea = nullptr;
+	QWidget *objectPriorMinAreaSlider = makeIntSlider(
+		&dialog, 1, 500, qRound(options.objectPriorMinAreaPct * 100.0),
+		[](int v) {
+			return MainWindow::tr("%1%")
+				.arg(QString::number(v / 100.0, 'f', v < 100 ? 2 : 1));
+		},
+		objectPriorMinArea);
+	objectPriorMinAreaSlider->setToolTip(MainWindow::tr(
+		"Minimum object-box size as a percentage of the source image. Lower "
+		"values keep small props and distant objects."));
+	QCheckBox *samGridFallbackEnabled = new QCheckBox(
+		MainWindow::tr("Find unlabeled scene pieces"), &dialog);
+	samGridFallbackEnabled->setChecked(options.samGridFallbackEnabled);
+	samGridFallbackEnabled->setToolTip(MainWindow::tr(
+		"Runs a slower SAM-family grid pass after detector proposals so "
+		"robots, notes, signs, whiteboard scraps, props, and other unusual "
+		"background objects can become editable layers."));
 	QCheckBox *groupRepeatedRegions = new QCheckBox(&dialog);
 	groupRepeatedRegions->setChecked(options.groupRepeatedRegions);
 
 	QFormLayout *form = new QFormLayout;
+	form->addRow(MainWindow::tr("Backend"), backend);
 	form->addRow(MainWindow::tr("Depth"), depth);
 	form->addRow(MainWindow::tr("Max masks"), maxMasksSlider);
 	form->addRow(MainWindow::tr("Minimum region area"), minRegionAreaSlider);
+	form->addRow(QString(), personPriorEnabled);
+	form->addRow(MainWindow::tr("Person certainty"), personPriorConfidenceSlider);
+	form->addRow(MainWindow::tr("Max people"), personPriorMaxRegionsSlider);
+	form->addRow(MainWindow::tr("Minimum person area"), personPriorMinAreaSlider);
+	form->addRow(QString(), objectPriorEnabled);
+	form->addRow(MainWindow::tr("Object certainty"), objectPriorConfidenceSlider);
+	form->addRow(MainWindow::tr("Max objects"), objectPriorMaxRegionsSlider);
+	form->addRow(MainWindow::tr("Minimum object area"), objectPriorMinAreaSlider);
+	form->addRow(QString(), samGridFallbackEnabled);
 	form->addRow(MainWindow::tr("Group masks"), groupRepeatedRegions);
 	layout->addLayout(form);
+
+	auto updatePersonPriorControls = [=](bool enabled) {
+		personPriorConfidenceSlider->setEnabled(enabled);
+		personPriorMaxRegionsSlider->setEnabled(enabled);
+		personPriorMinAreaSlider->setEnabled(enabled);
+	};
+	QObject::connect(
+		personPriorEnabled, &QCheckBox::toggled, &dialog,
+		updatePersonPriorControls);
+	updatePersonPriorControls(personPriorEnabled->isChecked());
+	auto updateObjectPriorControls = [=](bool enabled) {
+		objectPriorConfidenceSlider->setEnabled(enabled);
+		objectPriorMaxRegionsSlider->setEnabled(enabled);
+		objectPriorMinAreaSlider->setEnabled(enabled);
+	};
+	QObject::connect(
+		objectPriorEnabled, &QCheckBox::toggled, &dialog,
+		updateObjectPriorControls);
+	updateObjectPriorControls(objectPriorEnabled->isChecked());
 
 	QDialogButtonBox *buttons = new QDialogButtonBox(
 		QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -6449,12 +7367,25 @@ bool showObjectDecompositionOptionsDialog(
 	}
 
 	options.maxMasks = maxMasks->value();
-	options.minRegionAreaPct = minRegionArea->value();
+	options.minRegionAreaPct = minRegionArea->value() / 100.0;
+	const QString selectedBackend = backend->currentData().toString();
+	options.segmentationBackend = selectedBackend.isEmpty()
+									  ? QStringLiteral("sam")
+									  : selectedBackend;
 	const QString selectedDepth = depth->currentData().toString();
-	options.decompositionDepth = selectedDepth.isEmpty()
-									 ? QStringLiteral("balanced")
-									 : selectedDepth;
+	options.decompositionDepth = selectedDepth.isEmpty() ? QStringLiteral("detailed")
+														 : selectedDepth;
+	options.personPriorEnabled = personPriorEnabled->isChecked();
+	options.personPriorConfidencePct = personPriorConfidence->value();
+	options.personPriorMaxRegions = personPriorMaxRegions->value();
+	options.personPriorMinAreaPct = personPriorMinArea->value() / 100.0;
+	options.objectPriorEnabled = objectPriorEnabled->isChecked();
+	options.objectPriorConfidencePct = objectPriorConfidence->value();
+	options.objectPriorMaxRegions = objectPriorMaxRegions->value();
+	options.objectPriorMinAreaPct = objectPriorMinArea->value() / 100.0;
+	options.samGridFallbackEnabled = samGridFallbackEnabled->isChecked();
 	options.groupRepeatedRegions = groupRepeatedRegions->isChecked();
+	options.repairBase = false;
 	return true;
 }
 
@@ -6547,9 +7478,42 @@ QString candidateRegionSetLabel(const ai::JobRunResult &jobResult)
 
 QString candidateRegionGroupLabel(const ai::JobCandidate &candidate)
 {
+	if(candidateIsBaseRemainder(candidate)) {
+		return MainWindow::tr("Base Remainder");
+	}
 	return candidateMetadataText(
 		candidate, QStringLiteral("groupLabel"),
 		MainWindow::tr("Ungrouped Regions"));
+}
+
+void appendHideLayerMessages(net::MessageList &messages, const QVector<int> &layerIds)
+{
+	for(int layerId : layerIds) {
+		if(layerId > 0) {
+			messages.append(net::makeLocalChangeLayerVisibilityMessage(layerId, true));
+		}
+	}
+}
+
+void hideLayersAfterImport(canvas::CanvasModel *canvas, const QVector<int> &layerIds)
+{
+	if(!canvas || layerIds.isEmpty()) {
+		return;
+	}
+	QPointer<canvas::CanvasModel> guardedCanvas(canvas);
+	auto hideLayers = [guardedCanvas, layerIds] {
+		if(!guardedCanvas || !guardedCanvas->paintEngine()) {
+			return;
+		}
+		for(int layerId : layerIds) {
+			if(layerId > 0) {
+				guardedCanvas->paintEngine()->setLayerVisibility(layerId, true);
+			}
+		}
+	};
+	QTimer::singleShot(0, canvas, hideLayers);
+	QTimer::singleShot(50, canvas, hideLayers);
+	QTimer::singleShot(200, canvas, hideLayers);
 }
 
 int validInpaintAnchorLayer(canvas::LayerListModel *layers, int preferredLayerId)
@@ -6589,6 +7553,13 @@ QString candidateDetailsText(
 	if(!model.isEmpty()) {
 		details += MainWindow::tr("\nModel: %1").arg(model);
 	}
+	const QString segmentationBackend =
+		provenance.value(QStringLiteral("segmentationBackend"))
+			.toString(diagnostics.value(QStringLiteral("segmentationBackend")).toString());
+	if(!segmentationBackend.isEmpty()) {
+		details += MainWindow::tr("\nSegmentation: %1")
+					   .arg(segmentationBackend);
+	}
 	const QString scheduler =
 		diagnostics.value(QStringLiteral("scheduler"))
 			.toString(provenance.value(QStringLiteral("scheduler")).toString());
@@ -6602,6 +7573,10 @@ QString candidateDetailsText(
 	if(diagnostics.contains(QStringLiteral("elapsedMsec"))) {
 		details += MainWindow::tr("\nElapsed: %1 ms")
 					   .arg(diagnostics.value(QStringLiteral("elapsedMsec")).toInt());
+	}
+	if(diagnostics.contains(QStringLiteral("rejectedMaskCount"))) {
+		details += MainWindow::tr("\nRejected masks: %1")
+					   .arg(diagnostics.value(QStringLiteral("rejectedMaskCount")).toInt());
 	}
 		if(diagnostics.contains(QStringLiteral("peakVramMb"))) {
 			details += MainWindow::tr("\nPeak VRAM: %1 MB")
@@ -6643,6 +7618,10 @@ QString candidateDetailsText(
 		}
 		const int detectedRegions =
 			detailPass.value(QStringLiteral("detectedRegions")).toInt();
+		const int rawDetectedRegions =
+			detailPass.value(QStringLiteral("rawDetectedRegions")).toInt();
+		const int rejectedDetections =
+			detailPass.value(QStringLiteral("rejectedDetections")).toInt();
 		const int selectedRegions =
 			detailPass.value(QStringLiteral("selectedRegions")).toInt();
 		const int truncatedRegions =
@@ -6654,6 +7633,11 @@ QString candidateDetailsText(
 			if(truncatedRegions > 0) {
 				details += MainWindow::tr(" (%1 skipped)").arg(truncatedRegions);
 			}
+		}
+		if(rejectedDetections > 0) {
+			details += MainWindow::tr(", %1 rejected").arg(rejectedDetections);
+		} else if(rawDetectedRegions > 0 && detectedRegions == 0) {
+			details += MainWindow::tr(", no valid boxes");
 		}
 		if(!regionNames.isEmpty()) {
 			details += MainWindow::tr(" (%1)")
@@ -10033,8 +11017,9 @@ void MainWindow::setupActions()
 			QVector<ai::JobCandidate> importedCandidates;
 			importedCandidates.reserve(regionCount);
 			QVector<int> hiddenArtifactLayerIds;
-			hiddenArtifactLayerIds.reserve(regionCount + 1);
+			hiddenArtifactLayerIds.reserve(regionCount + 2);
 			hiddenArtifactLayerIds.append(sourceSnapshotLayerId);
+			hiddenArtifactLayerIds.append(masksGroupId);
 			for(int i = 0; i < regionCount; ++i) {
 				const ai::JobCandidate &candidate =
 					jobResult.response.candidates.at(i);
@@ -10081,12 +11066,11 @@ void MainWindow::setupActions()
 			}
 
 			layers->setLayerIdToSelect(importedLayerIds.first());
+			appendHideLayerMessages(messages, hiddenArtifactLayerIds);
 			m_doc->client()->sendCommands(messages.size(), messages.constData());
-			for(int layerId : hiddenArtifactLayerIds) {
-				currentCanvas->paintEngine()->setLayerVisibility(layerId, true);
-			}
+			hideLayersAfterImport(currentCanvas, hiddenArtifactLayerIds);
 			if(sourceLayerId > 0) {
-				currentCanvas->paintEngine()->setLayerVisibility(sourceLayerId, true);
+				hideLayersAfterImport(currentCanvas, QVector<int>{sourceLayerId});
 			}
 			QPointer<MainWindow> window(this);
 			QThread *labelThread = QThread::create(
@@ -10179,7 +11163,18 @@ void MainWindow::setupActions()
 			   this, canvasBounds.size(), options)) {
 			return;
 		}
+		options.repairBase = false;
 		lastObjectDecompositionSettings = options;
+		const bool semanticHelperEnabled = decompositionSemanticHelperEnabled();
+		if(semanticHelperEnabled) {
+			QString helperError;
+			if(!checkDecompositionSemanticHelper(helperError)) {
+				showErrorMessageWithDetails(
+					tr("Object decomposition naming needs the vision helper."),
+					helperError);
+				return;
+			}
+		}
 
 		drawdance::ViewModeBuffer viewModeBuffer;
 		QImage sourceImage = canvas->paintEngine()->getFlatImage(
@@ -10223,10 +11218,24 @@ void MainWindow::setupActions()
 			{QStringLiteral("height"), canvasBounds.height()},
 		};
 		request.parameters = QJsonObject{
+			{QStringLiteral("segmentationBackend"), options.segmentationBackend},
 			{QStringLiteral("maxMasks"), options.maxMasks},
 			{QStringLiteral("minRegionAreaPct"), options.minRegionAreaPct},
 			{QStringLiteral("decompositionDepth"), options.decompositionDepth},
+			{QStringLiteral("personPriorEnabled"), options.personPriorEnabled},
+			{QStringLiteral("personPriorConfidence"),
+			 options.personPriorConfidencePct / 100.0},
+			{QStringLiteral("personPriorMaxRegions"), options.personPriorMaxRegions},
+			{QStringLiteral("personPriorMinAreaPct"), options.personPriorMinAreaPct},
+			{QStringLiteral("objectPriorEnabled"), options.objectPriorEnabled},
+			{QStringLiteral("objectPriorConfidence"),
+			 options.objectPriorConfidencePct / 100.0},
+			{QStringLiteral("objectPriorMaxRegions"), options.objectPriorMaxRegions},
+			{QStringLiteral("objectPriorMinAreaPct"), options.objectPriorMinAreaPct},
+			{QStringLiteral("samGridFallbackEnabled"),
+			 options.samGridFallbackEnabled},
 			{QStringLiteral("groupRepeatedRegions"), options.groupRepeatedRegions},
+			{QStringLiteral("repairBase"), false},
 		};
 		request.preferences = QJsonObject{
 			{QStringLiteral("maxRenderEdge"), 1024},
@@ -10237,10 +11246,11 @@ void MainWindow::setupActions()
 			{QStringLiteral("activeLayerId"), sourceLayerId},
 			{QStringLiteral("selectionSource"), QStringLiteral("full-canvas")},
 		};
-			request.provenance = QJsonObject{
-				{QStringLiteral("createdBy"), QStringLiteral("underpaint")},
-				{QStringLiteral("uiEntryPoint"), QStringLiteral("Power Tools/Object Decomposition")},
-			};
+		request.provenance = QJsonObject{
+			{QStringLiteral("createdBy"), QStringLiteral("underpaint")},
+			{QStringLiteral("uiEntryPoint"),
+			 QStringLiteral("Power Tools/Object Decomposition")},
+		};
 
 		QProgressDialog *progress = new QProgressDialog(
 			tr("Finding objects and parts..."), tr("Cancel"), 0,
@@ -10264,14 +11274,45 @@ void MainWindow::setupActions()
 			cancelRequested->store(true);
 		});
 
-		ai::JobRunResult *result = new ai::JobRunResult;
+		ObjectDecompositionRunResult *result = new ObjectDecompositionRunResult;
 		QPointer<AiPreviewLabel> progressLabelPointer(progressLabel);
 		QPointer<QProgressDialog> progressPointer(progress);
 		const int progressRegions = qMax(1, options.maxMasks);
+		const int progressRepairSteps = options.repairBase ? 30 : 0;
+		progress->setMaximum(progressRegions + progressRepairSteps);
 		QThread *thread = QThread::create(
-			[request, result, progressLabelPointer, progressPointer,
-			 progressRegions, cancelRequested] {
-			*result = ai::JobRunner::run(
+			[request, result, progressLabelPointer, progressPointer, progressRegions,
+			 progressRepairSteps, sourcePath, sourceLayerId, canvasBounds,
+			 semanticHelperEnabled, cancelRequested] {
+			const auto updateProgress =
+				[progressLabelPointer, progressPointer](
+					const QString &text, const QString &imagePath, int value,
+					int maximum) {
+					QMetaObject::invokeMethod(
+						qApp,
+						[progressLabelPointer, progressPointer, text, imagePath, value,
+						 maximum] {
+							if(!progressLabelPointer || !progressPointer) {
+								return;
+							}
+							progressLabelPointer->setToolTip(text);
+							progressLabelPointer->setStatusText(text);
+							if(!imagePath.isEmpty()) {
+								QPixmap preview(imagePath);
+								if(!preview.isNull()) {
+									progressLabelPointer->setPreviewPixmap(
+										preview.scaled(
+											256, 192, Qt::KeepAspectRatio,
+											Qt::SmoothTransformation));
+								}
+							}
+							progressPointer->setMaximum(qMax(1, maximum));
+							progressPointer->setValue(
+								qBound(0, value, progressPointer->maximum()));
+						},
+						Qt::QueuedConnection);
+				};
+			result->decomposition = ai::JobRunner::run(
 				request, QString(), 15 * 60 * 1000,
 				[progressLabelPointer, progressPointer,
 				 progressRegions](const QJsonObject &event) {
@@ -10318,14 +11359,230 @@ void MainWindow::setupActions()
 						Qt::QueuedConnection);
 				},
 				cancelRequested.get());
+			if(!result->decomposition.canceled && result->decomposition.ok) {
+				for(ai::JobCandidate &candidate :
+					result->decomposition.response.candidates) {
+					applyDecompositionSemantics(
+						candidate, defaultDecompositionSemantics(candidate),
+						QStringLiteral("default"));
+				}
+			}
+			if(result->decomposition.canceled || !result->decomposition.ok ||
+			   cancelRequested->load()) {
+				return;
+			}
+
+			if(semanticHelperEnabled) {
+				result->semanticHelperAttempted = true;
+				const int totalRegions =
+					result->decomposition.response.candidates.size();
+				for(int i = 0; i < totalRegions; ++i) {
+					if(cancelRequested->load()) {
+						return;
+					}
+					ai::JobCandidate &candidate =
+						result->decomposition.response.candidates[i];
+					if(!candidateIsExtractedObject(candidate)) {
+						continue;
+					}
+					updateProgress(
+						MainWindow::tr("Classifying object %1/%2")
+							.arg(i + 1)
+							.arg(totalRegions),
+						candidate.imagePath, progressRegions,
+						progressRegions + progressRepairSteps);
+					QString semanticError;
+					const QJsonObject semantics =
+						classifyDecompositionRegionWithHelper(
+							candidate, sourcePath, semanticError);
+					if(semantics.isEmpty()) {
+						++result->semanticRegionsFailed;
+						if(!semanticError.isEmpty()) {
+							result->semanticLastError = semanticError;
+						}
+						continue;
+					}
+					applyDecompositionSemantics(
+						candidate, semantics, QStringLiteral("semantic-helper"));
+					++result->semanticRegionsClassified;
+				}
+				if(result->semanticRegionsClassified == 0) {
+					result->semanticFatalError =
+						result->semanticLastError.isEmpty()
+							? MainWindow::tr(
+								  "The vision helper did not classify any extracted regions.")
+							: result->semanticLastError;
+					return;
+				}
+				updateProgress(
+					MainWindow::tr("Grouping related object parts..."),
+					QString(), progressRegions,
+					progressRegions + progressRepairSteps);
+				QString groupRefinementError;
+				result->semanticGroupsRefined =
+					refineDecompositionGroupsWithHelper(
+						result->decomposition.response.candidates, sourcePath,
+						groupRefinementError);
+				if(result->semanticGroupsRefined == 0 &&
+				   !groupRefinementError.isEmpty()) {
+					result->semanticLastError = groupRefinementError;
+				}
+			}
+
+			if(!request.parameters.value(QStringLiteral("repairBase")).toBool() ||
+			   cancelRequested->load()) {
+				return;
+			}
+
+			result->repairRequested = true;
+			QImage repairMask = objectDecompositionRepairMask(
+				result->decomposition.response.candidates, canvasBounds.size());
+			if(repairMask.isNull() || !maskHasEditablePixels(repairMask)) {
+				repairMask = objectDecompositionRepairMask(
+					result->decomposition.response.candidates, canvasBounds.size(),
+					true);
+				result->repairMaskFallbackUsed =
+					!repairMask.isNull() && maskHasEditablePixels(repairMask);
+			}
+			if(repairMask.isNull() || !maskHasEditablePixels(repairMask)) {
+				return;
+			}
+			QString repairSourcePath = sourcePath;
+			QImage repairSourcePlate = objectDecompositionRepairSourcePlate(
+				result->decomposition.response.candidates, canvasBounds.size());
+			if(!repairSourcePlate.isNull()) {
+				const QString repairSourcePlatePath =
+					QFileInfo(sourcePath).absoluteDir().filePath(
+						QStringLiteral("object-decomposition-repair-source.png"));
+				if(!repairSourcePlate.save(repairSourcePlatePath, "PNG")) {
+					result->repairAttempted = true;
+					result->repair.ok = false;
+					result->repair.errorMessage =
+						MainWindow::tr("Could not write object repair source plate.");
+					return;
+				}
+				repairSourcePath = repairSourcePlatePath;
+			}
+			result->repairSourcePath = repairSourcePath;
+			const QString repairMaskPath =
+				QFileInfo(sourcePath).absoluteDir().filePath(
+					QStringLiteral("object-decomposition-repair-mask.png"));
+			if(!repairMask.save(repairMaskPath, "PNG")) {
+				result->repairAttempted = true;
+				result->repair.ok = false;
+				result->repair.errorMessage =
+					MainWindow::tr("Could not write object repair mask.");
+				return;
+			}
+			result->repairMaskPath = repairMaskPath;
+			result->repairAttempted = true;
+			updateProgress(
+				MainWindow::tr("Repairing background under extracted objects..."),
+				QString(), progressRegions, progressRegions + progressRepairSteps);
+
+			ai::JobRequest repairRequest =
+				ai::JobRequest::create(ai::Operation::Inpaint);
+			ai::JobAsset repairSourceAsset;
+			repairSourceAsset.role = QStringLiteral("source-image");
+			repairSourceAsset.path = repairSourcePath;
+			repairSourceAsset.mimeType = QStringLiteral("image/png");
+			repairSourceAsset.metadata = QJsonObject{
+				{QStringLiteral("colorSpace"), QStringLiteral("srgb")},
+				{QStringLiteral("sourceRole"),
+				 QStringLiteral("semantic-repair-source-plate")},
+			};
+			ai::JobAsset repairMaskAsset;
+			repairMaskAsset.role = QStringLiteral("mask");
+			repairMaskAsset.path = repairMaskPath;
+			repairMaskAsset.mimeType = QStringLiteral("image/png");
+			repairMaskAsset.metadata = QJsonObject{
+				{QStringLiteral("whiteMeans"), QStringLiteral("object-to-remove")},
+			};
+			repairRequest.inputs = {repairSourceAsset, repairMaskAsset};
+			repairRequest.parameters = QJsonObject{
+				{QStringLiteral("prompt"),
+				 objectDecompositionRepairPrompt(
+					 result->decomposition.response.candidates)},
+				{QStringLiteral("negativePrompt"),
+				 objectDecompositionRepairNegativePrompt(
+					 result->decomposition.response.candidates)},
+				{QStringLiteral("seed"), -1},
+				{QStringLiteral("cfg"), 4.0},
+				{QStringLiteral("denoise"), 0.72},
+				{QStringLiteral("scheduler"), QStringLiteral("dpmpp-3m-karras")},
+				{QStringLiteral("steps"), progressRepairSteps},
+				{QStringLiteral("refiner"), QJsonObject{{QStringLiteral("enabled"), false}}},
+				{QStringLiteral("detailPass"), QJsonObject{{QStringLiteral("enabled"), false}}},
+				{QStringLiteral("candidateCount"), 1},
+				{QStringLiteral("edgeFeatherPx"), 36},
+				{QStringLiteral("prefillNoise"), 0.0},
+				{QStringLiteral("prefillStyle"),
+				 QStringLiteral("object-context-plate")},
+			};
+			repairRequest.preferences = QJsonObject{
+				{QStringLiteral("maxRenderEdge"), 1024},
+				{QStringLiteral("variantMode"), QStringLiteral("sequential")},
+				{QStringLiteral("unloadPolicy"), QStringLiteral("idle")},
+				{QStringLiteral("vaeTiling"), true},
+				{QStringLiteral("cacheGuides"), true},
+				{QStringLiteral("safe4070Mode"), true},
+			};
+			repairRequest.region = QJsonObject{
+				{QStringLiteral("x"), canvasBounds.x()},
+				{QStringLiteral("y"), canvasBounds.y()},
+				{QStringLiteral("width"), canvasBounds.width()},
+				{QStringLiteral("height"), canvasBounds.height()},
+			};
+			repairRequest.source = QJsonObject{
+				{QStringLiteral("activeLayerId"), sourceLayerId},
+				{QStringLiteral("selectionSource"),
+				 QStringLiteral("object-decomposition-union-mask")},
+			};
+			repairRequest.provenance = QJsonObject{
+				{QStringLiteral("createdBy"), QStringLiteral("underpaint")},
+				{QStringLiteral("uiEntryPoint"),
+				 QStringLiteral("Power Tools/Object Decomposition/Base Repair")},
+			};
+			result->repair = ai::JobRunner::run(
+				repairRequest, QString(), 15 * 60 * 1000,
+				[updateProgress, progressRegions, progressRepairSteps](
+					const QJsonObject &event) {
+					const QString type =
+						event.value(QStringLiteral("type")).toString();
+					if(type != QStringLiteral("preview") &&
+					   type != QStringLiteral("candidate") &&
+					   type != QStringLiteral("refiner") &&
+					   type != QStringLiteral("detail")) {
+						return;
+					}
+					const int step = event.value(QStringLiteral("step")).toInt();
+					const int steps = event.value(QStringLiteral("steps"))
+										  .toInt(progressRepairSteps);
+					QString text =
+						type == QStringLiteral("candidate")
+							? MainWindow::tr("Background repair complete")
+							: MainWindow::tr("Repairing background");
+					if(step > 0 && steps > 0) {
+						text += MainWindow::tr(" - step %1/%2").arg(step).arg(steps);
+					}
+					const int value =
+						type == QStringLiteral("candidate")
+							? progressRegions + progressRepairSteps
+							: progressRegions + qBound(1, step, progressRepairSteps);
+					updateProgress(
+						text, event.value(QStringLiteral("imagePath")).toString(),
+						value, progressRegions + progressRepairSteps);
+				},
+				cancelRequested.get());
 		});
 		connect(thread, &QThread::finished, this, [=] {
 			progress->close();
 			progress->deleteLater();
 
-			const ai::JobRunResult jobResult = *result;
+			const ObjectDecompositionRunResult runResult = *result;
 			delete result;
 			thread->deleteLater();
+			const ai::JobRunResult jobResult = runResult.decomposition;
 
 			canvas::CanvasModel *currentCanvas = m_doc->canvas();
 			if(!currentCanvas) {
@@ -10336,10 +11593,19 @@ void MainWindow::setupActions()
 			if(jobResult.canceled) {
 				return;
 			}
+			if(runResult.repairAttempted && runResult.repair.canceled) {
+				return;
+			}
 			if(!jobResult.ok) {
 				showErrorMessageWithDetails(
 					tr("Object decomposition worker failed."),
 					jobResult.errorMessage);
+				return;
+			}
+			if(!runResult.semanticFatalError.isEmpty()) {
+				showErrorMessageWithDetails(
+					tr("Object decomposition semantic classification failed."),
+					runResult.semanticFatalError);
 				return;
 			}
 			if(jobResult.response.candidates.isEmpty()) {
@@ -10350,6 +11616,12 @@ void MainWindow::setupActions()
 
 			canvas::LayerListModel *layers = currentCanvas->layerlist();
 			const int regionCount = jobResult.response.candidates.size();
+			const bool hasRepairBase =
+				runResult.repairRequested && runResult.repairAttempted &&
+				!runResult.repair.canceled && runResult.repair.ok &&
+				!runResult.repair.response.candidates.isEmpty() &&
+				!QImage(runResult.repair.response.candidates.first().imagePath)
+					 .isNull();
 			QStringList groupOrder;
 			for(const ai::JobCandidate &candidate : jobResult.response.candidates) {
 				const QString groupLabel = candidateRegionGroupLabel(candidate);
@@ -10357,7 +11629,8 @@ void MainWindow::setupActions()
 					groupOrder.append(groupLabel);
 				}
 			}
-			const int requestedLayerIds = regionCount * 2 + groupOrder.size() + 4;
+			const int requestedLayerIds =
+				regionCount * 2 + groupOrder.size() + 4 + (hasRepairBase ? 1 : 0);
 			QVector<int> layerIds = layers->getAvailableLayerIds(requestedLayerIds);
 			if(layerIds.size() < requestedLayerIds) {
 				showErrorMessage(
@@ -10414,13 +11687,38 @@ void MainWindow::setupActions()
 						layers->getAvailableLayerName(groupLabel)));
 			}
 
+			if(hasRepairBase) {
+				const ai::JobCandidate &repairCandidate =
+					runResult.repair.response.candidates.first();
+				QImage repairImage(repairCandidate.imagePath);
+				const int repairLayerId = layerIds.at(nextLayerIdIndex++);
+				const int repairParentGroupId = regionGroupIds.value(
+					QStringLiteral("Base Remainder"), regionSetGroupId);
+				QString repairLayerName = tr("Repaired Base");
+				const QString repairSeed = candidateSeedText(repairCandidate);
+				if(!repairSeed.isEmpty()) {
+					repairLayerName =
+						tr("Repaired Base - Seed %1").arg(repairSeed);
+				}
+				messages.append(
+					net::makeLayerTreeCreateMessage(
+						contextId, repairLayerId, 0, repairParentGroupId, 0,
+						DP_MSG_LAYER_TREE_CREATE_FLAGS_INTO,
+						layers->getAvailableLayerName(repairLayerName)));
+				net::makePutImageMessagesCompat(
+					messages, contextId, repairLayerId, DP_BLEND_MODE_NORMAL,
+					canvasBounds.x(), canvasBounds.y(), repairImage,
+					currentCanvas->isCompatibilityMode());
+			}
+
 			QVector<int> importedLayerIds;
 			importedLayerIds.reserve(regionCount);
 			QVector<ai::JobCandidate> importedCandidates;
 			importedCandidates.reserve(regionCount);
 			QVector<int> hiddenArtifactLayerIds;
-			hiddenArtifactLayerIds.reserve(regionCount + 1);
+			hiddenArtifactLayerIds.reserve(regionCount + 2);
 			hiddenArtifactLayerIds.append(sourceSnapshotLayerId);
+			hiddenArtifactLayerIds.append(masksGroupId);
 			for(int i = 0; i < regionCount; ++i) {
 				const ai::JobCandidate &candidate =
 					jobResult.response.candidates.at(i);
@@ -10475,12 +11773,11 @@ void MainWindow::setupActions()
 					break;
 				}
 			}
+			appendHideLayerMessages(messages, hiddenArtifactLayerIds);
 			m_doc->client()->sendCommands(messages.size(), messages.constData());
-			for(int layerId : hiddenArtifactLayerIds) {
-				currentCanvas->paintEngine()->setLayerVisibility(layerId, true);
-			}
+			hideLayersAfterImport(currentCanvas, hiddenArtifactLayerIds);
 			if(sourceLayerId > 0) {
-				currentCanvas->paintEngine()->setLayerVisibility(sourceLayerId, true);
+				hideLayersAfterImport(currentCanvas, QVector<int>{sourceLayerId});
 			}
 			QPointer<MainWindow> window(this);
 			QThread *labelThread = QThread::create(
@@ -10491,6 +11788,10 @@ void MainWindow::setupActions()
 					const ai::JobCandidate candidate = importedCandidates.at(i);
 					if(candidate.metadata.value(QStringLiteral("maskRole"))
 						   .toString() != QStringLiteral("extracted-object")) {
+						continue;
+					}
+					if(candidate.metadata.value(QStringLiteral("helperStatus"))
+						   .toString() == QStringLiteral("semantic-helper")) {
 						continue;
 					}
 					QString error;
@@ -10539,11 +11840,50 @@ void MainWindow::setupActions()
 				labelThread, &QThread::finished, labelThread,
 				&QObject::deleteLater);
 			labelThread->start();
+			QString importSummary =
+				hasRepairBase
+					? tr("Imported %1 object layer(s) with a repaired base.")
+						  .arg(importedLayerIds.size())
+					: tr("Imported %1 object layer(s). Base remainder stays visible so the stack reconstructs the source.")
+						  .arg(importedLayerIds.size());
+			QString details = candidateDetailsText(jobResult);
+			if(runResult.semanticHelperAttempted) {
+				details += QStringLiteral("\n\n");
+				details += tr("Semantic classification: %1 classified, %2 failed.")
+							   .arg(runResult.semanticRegionsClassified)
+							   .arg(runResult.semanticRegionsFailed);
+				if(runResult.semanticGroupsRefined > 0) {
+					details += QStringLiteral("\n");
+					details += tr("Object grouping: %1 layer(s) refined.")
+								   .arg(runResult.semanticGroupsRefined);
+				}
+			}
+			if(runResult.repairRequested) {
+				if(hasRepairBase) {
+					details += QStringLiteral("\n\n");
+					details += tr("Base repair:");
+					details += QStringLiteral("\n");
+					if(!runResult.repairSourcePath.isEmpty()) {
+						details += tr("Repair source plate: %1")
+									   .arg(runResult.repairSourcePath);
+						details += QStringLiteral("\n");
+					}
+					if(runResult.repairMaskFallbackUsed) {
+						details += tr("Repair mask: used all extracted objects because semantic roles left no removable pixels.");
+						details += QStringLiteral("\n");
+					}
+					details += candidateDetailsText(runResult.repair);
+				} else if(runResult.repairAttempted && !runResult.repair.ok) {
+					details += QStringLiteral("\n\n");
+					details += tr("Base repair failed: %1")
+								   .arg(runResult.repair.errorMessage);
+				} else if(!runResult.repairAttempted) {
+					details += QStringLiteral("\n\n");
+					details += tr("Base repair skipped: no extracted-object mask pixels were available.");
+				}
+			}
 			utils::showInformation(
-				this, tr("Object Decomposition"),
-				tr("Imported %1 object layer(s). Select a layer or group and run Underpaint Behind to repair the base.")
-					.arg(importedLayerIds.size()),
-				candidateDetailsText(jobResult));
+				this, tr("Object Decomposition"), importSummary, details);
 		});
 		thread->start();
 	});
@@ -10868,10 +12208,12 @@ void MainWindow::setupActions()
 			return;
 		}
 
-		static InpaintOptions lastUnderpaintSettings;
-		InpaintOptions options = lastUnderpaintSettings;
-		options.refinerEnabled = loadRefinerOptions().enabled;
-		options.detailPassEnabled = loadDetailPassOptions().enabled;
+			static InpaintOptions lastUnderpaintSettings;
+			InpaintOptions options = lastUnderpaintSettings;
+			const RefinerOptions refinerDefaults = loadRefinerOptions();
+			options.refinerEnabled = refinerDefaults.enabled;
+			options.refinerPlacement = refinerDefaults.placement;
+			options.detailPassEnabled = loadDetailPassOptions().enabled;
 		options.prompt.clear();
 		options.negativePrompt.clear();
 		const QString activeLayerTitle =
@@ -11259,12 +12601,14 @@ void MainWindow::setupActions()
 			return;
 		}
 
-		const int sourceLayerId = validInpaintAnchorLayer(
-			canvas->layerlist(), m_doc->toolCtrl()->activeLayer());
-		static InpaintOptions lastInpaintSettings;
-		InpaintOptions options = lastInpaintSettings;
-		options.refinerEnabled = loadRefinerOptions().enabled;
-		options.detailPassEnabled = loadDetailPassOptions().enabled;
+			const int sourceLayerId = validInpaintAnchorLayer(
+				canvas->layerlist(), m_doc->toolCtrl()->activeLayer());
+			static InpaintOptions lastInpaintSettings;
+			InpaintOptions options = lastInpaintSettings;
+			const RefinerOptions refinerDefaults = loadRefinerOptions();
+			options.refinerEnabled = refinerDefaults.enabled;
+			options.refinerPlacement = refinerDefaults.placement;
+			options.detailPassEnabled = loadDetailPassOptions().enabled;
 		options.prompt.clear();
 		options.negativePrompt.clear();
 		if(!showInpaintOptionsDialog(
@@ -11749,12 +13093,14 @@ void MainWindow::setupActions()
 		static InpaintOptions lastOutpaintSettings;
 		static bool lastOutpaintSettingsInitialized = false;
 		InpaintOptions options = lastOutpaintSettings;
-			if(!lastOutpaintSettingsInitialized) {
-				options.denoise = 0.9;
-				options.samplerPreset = QStringLiteral("custom");
-			}
-			options.refinerEnabled = loadRefinerOptions().enabled;
-			options.detailPassEnabled = loadDetailPassOptions().enabled;
+				if(!lastOutpaintSettingsInitialized) {
+					options.denoise = 0.9;
+					options.samplerPreset = QStringLiteral("custom");
+				}
+				const RefinerOptions refinerDefaults = loadRefinerOptions();
+				options.refinerEnabled = refinerDefaults.enabled;
+				options.refinerPlacement = refinerDefaults.placement;
+				options.detailPassEnabled = loadDetailPassOptions().enabled;
 			options.prompt.clear();
 			options.negativePrompt.clear();
 		if(!showInpaintOptionsDialog(

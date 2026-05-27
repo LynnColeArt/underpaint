@@ -148,7 +148,12 @@
     {
       "id": "adetailer-yolo-pack",
       "displayName": "ADetailer YOLO Pack",
-      "capabilities": ["face_detail", "body_detail", "hand_detail"],
+      "capabilities": [
+        "face_detail",
+        "body_detail",
+        "hand_detail",
+        "person_decomposition_prior"
+      ],
       "backend": "ultralytics",
       "format": "pt",
       "model": "~/.underpaint/models/detail/adetailer",
@@ -162,13 +167,56 @@
         "keepWarm": false,
         "unloadAfterJob": true
       },
-      "notes": "Face, body, and hand detection for targeted detail passes."
+      "notes": "Face, body, and hand detection for targeted detail passes. The person segmentation model can also seed object decomposition by finding person boxes before SAM-family mask selection."
+    },
+    {
+      "id": "yolo11n-seg-object-prior",
+      "displayName": "YOLO11n Segmentation Object Prior",
+      "capabilities": [
+        "object_decomposition_prior",
+        "object_detection",
+        "segmentation"
+      ],
+      "backend": "ultralytics",
+      "format": "pt",
+      "model": "~/.underpaint/models/detection/yolo11n-seg.pt",
+      "sourceUrl": "https://github.com/ultralytics/assets/releases",
+      "license": "agpl-3.0",
+      "commercialUse": "license-restricted",
+      "installedState": "optional",
+      "expectedVramMb": 512,
+      "outputArtifact": "detection_regions",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true
+      },
+      "notes": "General COCO-style segmentation prior for detector-first object decomposition. Proposes vehicles, animals, furniture, signs, and props before optional SAM-family grid fallback."
+    },
+    {
+      "id": "sam-hq-vit-base-transformers",
+      "displayName": "HQ-SAM ViT Base",
+      "capabilities": ["object_decomposition", "segmentation"],
+      "backend": "sam-hq",
+      "format": "hf_repo",
+      "model": "~/.underpaint/models/segmentation/sam-hq-vit-base",
+      "sourceUrl": "https://huggingface.co/syscv-community/sam-hq-vit-base",
+      "license": "apache-2.0",
+      "commercialUse": "allowed",
+      "installedState": "optional",
+      "expectedVramMb": 3000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "object_masks",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true
+      },
+      "notes": "SAM-family fallback backend for object/part decomposition. Download with tools/ai/download-underpaint-sam-hq.sh."
     },
     {
       "id": "sam-vit-base-transformers",
       "displayName": "SAM ViT Base",
       "capabilities": ["object_decomposition", "segmentation"],
-      "backend": "transformers",
+      "backend": "sam",
       "format": "hf_repo",
       "model": "facebook/sam-vit-base",
       "sourceUrl": "https://huggingface.co/facebook/sam-vit-base",
@@ -182,7 +230,7 @@
         "keepWarm": false,
         "unloadAfterJob": true
       },
-      "notes": "First object/part decomposition backend. Used by object-decomposition jobs unless UNDERPAINT_SAM_MODEL overrides it."
+      "notes": "Fallback object/part decomposition backend. Used when the Object Decomposition dialog chooses SAM Base or UNDERPAINT_SEGMENTATION_BACKEND=sam."
     },
     {
       "id": "rembg-u2net-cpu",
@@ -204,6 +252,59 @@
         "cpuBackend": true
       },
       "notes": "Quick local background removal backend. The first run downloads u2net.onnx to ~/.u2net."
+    },
+    {
+      "id": "birefnet-transformers",
+      "displayName": "BiRefNet",
+      "capabilities": [
+        "background_removal",
+        "foreground_matte",
+        "alpha_refinement",
+        "mask_bakeoff"
+      ],
+      "backend": "transformers",
+      "format": "hf_repo_remote_code",
+      "model": "~/.underpaint/models/segmentation/birefnet",
+      "sourceUrl": "https://huggingface.co/ZhengPeng7/BiRefNet",
+      "license": "mit",
+      "commercialUse": "allowed",
+      "installedState": "optional",
+      "expectedVramMb": 3500,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "foreground_matte",
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "requiresTrustRemoteCode": true
+      },
+      "notes": "High-quality dichotomous segmentation/matting candidate for clean alpha edges. Download with tools/ai/download-underpaint-birefnet.sh and compare with the mask bakeoff harness."
+    },
+    {
+      "id": "ben2-base",
+      "displayName": "BEN2 Base",
+      "capabilities": [
+        "background_removal",
+        "foreground_matte",
+        "alpha_refinement",
+        "mask_bakeoff"
+      ],
+      "backend": "ben2",
+      "format": "hf_repo",
+      "model": "PramaLLC/BEN2",
+      "sourceUrl": "https://huggingface.co/PramaLLC/BEN2",
+      "license": "mit",
+      "commercialUse": "allowed",
+      "installedState": "research",
+      "expectedVramMb": 4000,
+      "preferredRenderEdge": 1024,
+      "outputArtifact": "foreground_matte",
+      "experimental": true,
+      "runtimePolicy": {
+        "keepWarm": false,
+        "unloadAfterJob": true,
+        "requiresExternalPackage": "ben2"
+      },
+      "notes": "Promising background removal and edge refinement candidate. Runtime is not wired yet because it requires the separate BEN2 package."
     }
   ]
 }

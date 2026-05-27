@@ -30,6 +30,7 @@ Avoid defaulting to models that:
 | Capability | Default candidate | Why | License notes | Research status |
 | --- | --- | --- | --- | --- |
 | Promptable segmentation | SAM 2.1 Hiera Tiny or Small | Official SAM 2.1 has 38.9M tiny and 46M small checkpoints; Apache-2.0 checkpoints; supports image prompting and automatic masks. | Apache-2.0 for checkpoints/code. | Strong first default. Benchmark tiny vs small on photo restoration masks. |
+| High-quality SAM-family cutouts | HQ-SAM ViT Base | Sharper mask decoder that works with the current Transformers worker shape through `SamHQModel` and `SamHQProcessor`. | Apache-2.0 per model card/repo. | Downloaded to `~/.underpaint/models/segmentation/sam-hq-vit-base/` as the first pluggable segmentation backend. |
 | Region naming / object labels | Florence-2-base-ft | 0.23B model, MIT, supports captioning, object detection, dense region captioning, and region proposal. | MIT. | Good small generalist for naming/grouping masks. Test quality on old photos. |
 | Open-vocabulary detection | Grounding DINO | Strong text-prompt detection and commonly paired with SAM. | Apache-2.0. | Useful when user prompts "separate the tree branches" or "find rocks". Heavier than Florence path. |
 | Background removal / matting | BiRefNet variants | MIT repo, high-quality dichotomous segmentation/matting family, ONNX releases exist, 2025 HR/dynamic variants available. | MIT repo. Verify each weight card before bundling. | Primary research candidate for community build. |
@@ -341,6 +342,12 @@ detection box -> padded crop -> resize to detail render edge -> inpaint crop
 The current worker exposes `detailRenderEdge` and `minCropEdge` in
 `detailPass`. The default detail render edge is 768 px, with 1024 px available
 for higher-quality tests on the RTX 4070.
+
+Detailing is detector-gated. The worker should not run a diffusion detail crop
+unless an enabled detector returns at least one valid face/body/hand box after
+class, size, aspect-ratio, and confidence filtering. If no valid boxes are
+found, the detail pass should report `no-detections` and leave the candidate
+unchanged.
 
 ## License Notes
 

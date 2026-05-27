@@ -113,6 +113,20 @@ For each separated region, Underpaint can generate background repair candidates 
 
 Scene decomposition should create a reconstruction workspace, not destroy the original image.
 
+Underpainting is outpainting turned inward. Instead of extending the border of
+an image, Underpaint reconstructs what should exist underneath the visible
+composition. SAM gives geometry. A vision helper gives judgment about
+foreground, midground, background, and repair behavior. Diffusion gives paint.
+The product work is making those pieces cooperate while keeping every layer,
+mask, and repair candidate inspectable by the artist.
+
+Some scenes need a deeper contextual class behind normal background. When an
+image contains sky, horizon, distant hills, far fields, clouds, or a road
+vanishing into distance, Underpaint should preserve that as optional
+`sky-horizon` context rather than mixing it with nearby background objects. This
+gives repair prompts and layer groups better long-distance structure without
+forcing a horizon layer onto every image.
+
 ## Generative Region Operations
 
 Inpaint, outpaint, and scene-repair fills should share one operation model:

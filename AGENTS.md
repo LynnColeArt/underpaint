@@ -136,18 +136,24 @@ matching module.
 
 ## Launch Notes
 
-`UNDERPAINT_AI_WORKER` currently expects a single executable path. Use the
-wrapper script:
+For normal local AI testing, use the one-command launcher:
 
 ```bash
-UNDERPAINT_AI_WORKER="$PWD/tools/ai/run-diffusers-worker.sh" \
-  ./build-qt5-client-baseline/bin/drawpile
+tools/ai/run-underpaint.sh
 ```
 
-Or use the app launcher that sets the worker environment for you:
+It starts the prompt helper if needed, waits until `/v1/models` is reachable,
+sets `UNDERPAINT_PROMPT_HELPER_URL`, points the app at the Diffusers worker, and
+launches Underpaint. Set `UNDERPAINT_START_PROMPT_HELPER=0` only when you
+intentionally want to provide your own helper endpoint.
+
+Model-specific launchers use the same helper startup behavior:
 
 ```bash
 tools/ai/run-underpaint-diffusers.sh
+tools/ai/run-underpaint-realvisxl-inpaint.sh
+tools/ai/run-underpaint-juggernaut.sh
+tools/ai/run-underpaint-juggernaut-x.sh
 ```
 
 ## Verification Commands

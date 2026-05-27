@@ -129,24 +129,52 @@ requires SAM-like object/part masks, not color or luminance bands.
 
 `Power Tools > Object Decomposition...` is the first real attempt at the intended
 decomposition feature. It submits an `object-decomposition` job to the AI
-worker. The Python worker uses a SAM checkpoint, defaulting to
-`facebook/sam-vit-base`, samples a point grid according to the selected depth,
-deduplicates overlapping masks, ranks masks by usefulness rather than size,
-keeps a base-remainder layer for pixels not covered by extracted objects,
-rejects background-like masks, cleans small mask fragments and pinholes, then
-imports the resulting object/part masks as movable transparent layers with
-lightly feathered alpha edges.
+worker. The current path is detector-first: ADetailer
+`person_yolov8n-seg.pt` finds whole-person candidates, YOLO11n segmentation
+finds common objects, and the worker ranks, cleans, deduplicates, and imports
+those masks as movable transparent layers. This is a better fit for crowded
+photos than the old SAM grid-first path, because people, vehicles, animals,
+props, signs, and furniture start as object-shaped regions instead of random
+point-grid fragments.
+
+The SAM-family segmentation backend is still available for fallback discovery.
+The dialog lets the user choose `sam-hq` or `sam`, but the SAM grid pass is off
+by default because HQ-SAM has been unreliable in recent decomp tests. Enabling
+the fallback can recover unlabeled pieces, but it may also add noisy partial
+masks that need cleanup. Person-prior certainty, object-prior certainty,
+maximum detections, and minimum region sizes are separate controls so dense
+crowds and small props can keep high recall without making every SAM fallback
+mask enormous.
+
+The worker keeps a base-remainder layer for pixels not covered by extracted
+objects, rejects background-like masks, cleans small mask fragments and
+pinholes, and imports the resulting object/part masks with a very light alpha
+edge.
 
 The worker preserves source RGB while swapping alpha into the cutout PNGs. This
 keeps feathered edges from picking up dark transparent-background fringes.
-After import, extracted-object layers are queued for the same local helper
-naming pass used by color separation; the base-remainder layer keeps its fixed
-name.
+Each imported region records normalized metadata such as
+`segmentationBackend`, `bbox`, `areaPx`, `predictedIou`, `maskPrior`,
+`className`, and `detectorModel`; the worker reports how many masks were
+rejected by each cleanup policy.
+The minimum region area can be fractional; the UI default is below `1%` because
+busy street scenes, crowds, small props, and partial figures are exactly where
+decomposition becomes useful.
+When a vision helper is configured, Underpaint asks it to classify each extracted
+region using both the full source image and the isolated slice. The helper
+returns semantic metadata such as layer name, foreground/background depth role,
+scene role, repair role, group, prompt phrase, and confidence. When automatic
+base repair is enabled, this helper is required: Underpaint should fail loudly
+instead of silently building a bad repair plate from generic fallback roles.
 
-This first slice still requires manual background repair: after import, select
-an object layer or group and run `Power Tools > Underpaint Behind Active Layer...`.
-Automatic repaired-base generation should be the next layer on top of this SAM
-mask path.
+This slice can optionally run an automatic repaired-base pass after the SAM
+masks return. Underpaint builds a semantic repair source plate from candidates
+whose `repairRole` is `keep-context`, masks candidates whose `repairRole` is
+`remove-from-base`, expands that remove mask slightly to cover object halos, then
+runs one conservative inpaint pass with the same edge-slice prefill strategy used
+by outpaint. The result imports as `Repaired Base` inside the base-remainder
+group. Manual `Power Tools > Underpaint Behind Active Layer...` remains useful
+for rerunning or targeting a specific layer or group.
 
 ## Underpainting
 
@@ -154,22 +182,55 @@ Underpainting is the title workflow that turns scene decomposition into a
 restoration operation. It means lifting visible objects into editable regions
 and reconstructing plausible image content underneath them.
 
+Underpainting is outpainting turned inward. Instead of extending an image past
+its borders, Underpaint reconstructs what should exist underneath the visible
+composition. A mask alone is not a judgment call: SAM can supply scissors, but
+the vision helper must decide how each region participates in the scene before
+diffusion sees the repair problem.
+
+The dirty background plate is an intentional intermediate artifact. Background
+and keep-context pieces are flattened onto a scratch plate, while removed
+foreground pieces become holes. Broken texture, half-erased shadows, and edge
+artifacts are useful signals: they show the model where the hidden scene needs
+repair. The goal is not a perfect synthetic image. The goal is a clean plate
+that can sit behind movable layers without calling attention to itself.
+
+Later passes should repeat this logic. After the first repaired-base candidate,
+the vision helper can compare the original image, layer packet, and repaired
+background to find leftover foreground contamination. Those leftovers become a
+new mask, and the repair pass runs again. The same method can eventually repair
+object overlaps: if one foreground object hides part of another, Underpaint can
+reconstruct the hidden lower-layer piece before putting the scene back together.
+
+SAM gives geometry. The vision helper gives judgment. Diffusion gives paint.
+Underpaint's job is to make them cooperate without flattening the workflow into
+uninspectable soup.
+
 The intended flow is:
 
 1. Capture the visible source image.
 2. Run automatic segmentation to produce candidate masks.
 3. Cluster repeating masks into region groups.
 4. Create a usable region set immediately with generic names.
-5. Send region crops to the local helper queue for asynchronous labeling.
-6. Update labels and prompt phrases as helper results arrive.
-7. Let the user select a region or group and run `Underpaint Behind`.
-8. Hide or dim the original source while previewing the repaired background.
-9. Import repair candidates through the same candidate-layer workflow used by
+5. Send the full source image plus each region crop to the local vision helper.
+6. Store semantic metadata on regions as helper results arrive.
+7. Optionally run an automatic repaired-base pass from the semantic repair plate.
+8. Let the user select a region or group and run `Underpaint Behind` for manual
+   reruns or targeted repairs.
+9. Hide or dim the original source while previewing the repaired background.
+10. Import repair candidates through the same candidate-layer workflow used by
    inpaint and outpaint.
 
-Underpainting should not block on the language helper. Segmentation and mask
-creation should be usable first. Labels, object classes, and prompt phrases can
-arrive later as enrichment.
+Underpainting should not hide helper failures. Mask-only decomposition can still
+be useful as a future non-repair mode, but repaired-base generation depends on
+semantic judgment and should fail clearly when the vision helper is unavailable
+or cannot classify any extracted regions.
+
+The higher-quality version of this workflow is described in
+`docs/semantic-peel-feature-request.md`: an iterative loop where the vision
+helper chooses the next scene element, a promptable segmentation backend cuts it
+out, mask/matting cleanup turns it into an artist-usable layer, and the
+remaining plate is repaired before the next peel.
 
 ### Region Sets
 
@@ -182,14 +243,26 @@ Region set structure:
 ```text
 Scene Decomposition
   Region Set - Balanced
-    Foreground objects
-      Region 001
-      Region 002
-    Repeating small regions
-      Region 003
-      Region 004
-    Tonal/background regions
-      Region 005
+    Base Remainder
+      Repaired Base
+      Base Remainder
+    Sky / Horizon
+      clouds
+      distant hills
+      horizon road
+    Red Car
+      windshield
+      hood
+      dashboard edge
+    Woman
+      face
+      hair
+      shirt
+      hand
+    Robot
+      robot head
+      coffee cup
+      compass hand
     Masks
     Source snapshot
 ```
@@ -197,7 +270,9 @@ Scene Decomposition
 For the first implementation, groups can be provisional. SAM will eventually
 provide better masks, and the helper can rename groups after inspecting region
 crops. The important early behavior is that repeated small regions can live
-under one group instead of exploding the layer list.
+under one group instead of exploding the layer list. The helper should treat
+`name` as the specific layer or part label and `group` as the parent object
+bucket in the layer tree.
 
 ### Decomposition Depth
 
@@ -213,6 +288,9 @@ Advanced controls should include:
 
 - max masks
 - minimum region area
+- person detector certainty
+- person detector max regions
+- minimum person area
 - overlap behavior
 - keep nested masks
 - mask feather
@@ -239,23 +317,37 @@ The helper should return small structured enrichments:
 
 ```json
 {
-  "label": "foreground branch",
-  "group": "Foreground objects",
+  "name": "foreground branch",
+  "depthRole": "foreground",
+  "sceneRole": "prop",
+  "repairRole": "remove-from-base",
+  "group": "Foreground Objects",
   "promptPhrase": "thin wet foreground branch crossing the lake scene",
-  "backgroundGuess": "lake water, waterfall mist, and wet rock texture behind it",
   "confidence": 0.72
 }
 ```
 
-This is a smart function, not an autonomous agent. It suggests labels and prompt
-phrases; the user remains in control.
+`depthRole` describes visual depth: foreground is anything in front of the
+background, midground covers intervening scene elements, and background is the
+near or general scenery behind those foreground and midground elements.
+`sky-horizon` is an optional deeper background role for sky, clouds, far hills,
+vanishing roads, visible horizon lines, and other distant scene structure. It
+should only appear when that material is actually present.
+`repairRole` describes how Underpaint should construct the hidden repair source:
+`keep-context` regions are composited into the repair plate, while
+`remove-from-base` regions become holes for diffusion to fill.
 
-Current first slice: after `Power Tools > Color Separation...` imports the region set,
-Underpaint starts a quiet helper pass using the candidate region image. When the
-vision helper returns a short name, the visible region layer is retitled. If the
-helper is unavailable or a label fails, the generic region name remains and the
-workflow is not interrupted. The same asynchronous label queue should be reused
-for true object/part decomposition once SAM-like masks are connected.
+This is a smart function, not an autonomous agent. It suggests labels, groups,
+prompt phrases, and repair roles; the user remains in control.
+
+Current first slice: after `Power Tools > Object Decomposition...` gets SAM
+masks, Underpaint runs the helper before base repair. When classification
+succeeds, visible layers import with semantic names/groups and base repair uses
+the semantic repair source plate. A second text-only helper pass refines parent
+object groups so related parts can land under groups like `Woman`, `Robot`, or
+`Car` instead of broad fallback groups. If the helper is not running, not
+configured, or classifies zero extracted regions, the operation fails before
+importing a misleading decomposition.
 
 ### Underpaint Behind
 
@@ -348,6 +440,7 @@ Manual Inpaint is the familiar selection-based entry point.
 - CFG
 - denoise
 - steps or quality preset
+- refiner/detailer stage settings
 - context padding
 - guide layer
 - model/provider

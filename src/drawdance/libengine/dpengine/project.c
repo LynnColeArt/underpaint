@@ -201,6 +201,18 @@ static DP_ProjectCheckResult project_check_error(int error)
     return (DP_ProjectCheckResult){DP_PROJECT_CHECK_NONE, .error = error};
 }
 
+#ifndef NDEBUG
+static bool trace_sql_prepare_statements(void)
+{
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char *value = getenv("DP_PROJECT_TRACE_SQL");
+        enabled = value && value[0] != '\0' && strcmp(value, "0") != 0;
+    }
+    return enabled != 0;
+}
+#endif
+
 DP_ProjectCheckResult DP_project_check(const unsigned char *buf, size_t size)
 {
     if (size < 72) {
@@ -257,7 +269,11 @@ DP_ProjectCheckResult DP_project_check_path(const char *path)
 static sqlite3_stmt *prepare(sqlite3 *db, const char *sql, unsigned int flags,
                              int *out_result)
 {
-    DP_debug("Prepare statement: %s", sql);
+#ifndef NDEBUG
+    if (trace_sql_prepare_statements()) {
+        DP_debug("Prepare statement: %s", sql);
+    }
+#endif
     sqlite3_stmt *stmt;
     int prepare_result = sqlite3_prepare_v3(db, sql, -1, flags, &stmt, NULL);
     assign_result(prepare_result, out_result);

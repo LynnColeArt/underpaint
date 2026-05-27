@@ -228,29 +228,122 @@ path for the actual Underpaint decomposition workflow. It exports the visible
 canvas as a `source-image`, submits an `object-decomposition` job, and imports
 returned object/part masks as transparent movable layers.
 
-The Python worker currently uses SAM through `transformers`, defaulting to
-`facebook/sam-vit-base`. The default can be overridden with
-`UNDERPAINT_SAM_MODEL` or a future model-manager entry. The operation returns
-the same candidate shape as color separation. Worker-side selection ranks masks
-by usefulness rather than size, keeps a base-remainder layer for pixels not
-covered by extracted objects, removes small disconnected fragments, fills only
-tiny pinholes, rejects likely background masks, and emits a softly feathered
-cutout alpha:
+The Python worker now treats decomposition as detector-first. By default it runs
+installed YOLO-family priors before any SAM-family grid pass: the ADetailer
+`person_yolov8n-seg.pt` model finds people, while
+`~/.underpaint/models/detection/yolo11n-seg.pt` proposes common COCO-style
+objects such as vehicles, animals, furniture, signs, and props. These detector
+masks are ranked, cleaned, deduplicated, and imported as normal movable layers.
+
+The SAM-family backend is still available as a second-pass grid discoverer
+rather than the primary scene discoverer. `parameters.segmentationBackend`
+selects that grid backend: `sam` defaults to `facebook/sam-vit-base`, while
+`sam-hq` loads HQ-SAM from `~/.underpaint/models/segmentation/sam-hq-vit-base`
+when downloaded. Backends can also be overridden with
+`UNDERPAINT_SEGMENTATION_BACKEND`, `UNDERPAINT_SAM_HQ_MODEL`, or
+`UNDERPAINT_SAM_MODEL`. The UI keeps the grid pass on by default because
+detectors alone miss unusual scene objects like robots, notes, signs, and
+whiteboard scraps.
+
+The person prior is controlled with `parameters.personPriorEnabled` (default
+`true`). It uses the installed ADetailer model under
+`~/.underpaint/models/detail/adetailer` to find person boxes, merges overlapping
+same-person detections, then asks SAM Base to turn those boxes into person
+masks. Diagnostics report its status under `diagnostics.personPrior`.
+
+The general object prior is controlled with `parameters.objectPriorEnabled`
+(default `true`). It uses the installed YOLO11n segmentation detector under
+`~/.underpaint/models/detection/yolo11n-seg.pt`. Diagnostics report its status
+under `diagnostics.objectPrior`. When enabled with the person prior, person
+detections are skipped in the general detector so the person-specific path can
+keep bodies together.
+
+The SAM-family grid pass is controlled with
+`parameters.samGridFallbackEnabled` (default `true`). Diagnostics report its
+status under `diagnostics.samGridFallback`. The pass runs after detector
+proposals so unusual subjects, robots, notes, signs, whiteboard scraps, props,
+and other background objects can still become editable layers. Candidates
+record their source path with `metadata.maskPrior`, such as
+`person-yolo-sam-box`, `yolo-mask-correction`, `object-yolo-seg`, or `sam-grid`.
+
+The person prior has separate crowd-sensitive controls:
+`parameters.personPriorConfidence` sets detector certainty,
+`parameters.personPriorMaxRegions` caps promoted detections, and
+`parameters.personPriorMinAreaPct` sets the minimum person-box size as a
+percentage of the source image. This lets dense street scenes keep small distant
+people without lowering the general SAM grid threshold for every object.
+
+The object prior has matching controls:
+`parameters.objectPriorConfidence`, `parameters.objectPriorMaxRegions`, and
+`parameters.objectPriorMinAreaPct`. The defaults are intentionally recall-heavy
+so small props survive the first pass and can be filtered by cleanup and layer
+review instead of disappearing before the artist sees them.
+
+`parameters.minRegionAreaPct` is a numeric percentage and may be fractional.
+Busy scenes often need values below `1.0`; the UI default is intentionally low
+so small people, props, and object parts are not discarded before ranking.
+The object-decomposition default is tuned for detailed scene peel rather than
+only the most obvious foreground subjects.
+
+The operation returns the same candidate shape as color separation, plus
+normalized segmentation metadata such as `metadata.segmentationBackend`,
+`metadata.bbox`, `metadata.areaPx`, and worker diagnostics for rejected masks.
+Worker-side selection ranks masks by usefulness rather than size, keeps a
+base-remainder layer for pixels not covered by extracted objects, removes small
+disconnected fragments, fills only tiny pinholes, rejects likely background
+masks, and emits a softly feathered cutout alpha:
 
 - `imagePath` points to the RGBA extracted object/part layer.
 - `maskPath` points to the corresponding grayscale mask.
 - `metadata.modelRole` uses `object-decomposition`.
 - `metadata.maskRole` uses `extracted-object`.
-- `metadata.bounds`, `areaPixels`, and `samPredictedIou` describe the mask.
+- `metadata.maskPrior` identifies `person-yolo-sam-box`,
+  `yolo-mask-correction`, `object-yolo-seg`, or `sam-grid`.
+- `metadata.bounds`, `metadata.bbox`, `metadata.areaPixels`,
+  `metadata.areaPx`, and `metadata.predictedIou` describe the mask.
 
 Cutout PNGs preserve the source RGB and replace only the alpha channel. This
 avoids dark premultiplied-looking fringes around feathered masks.
 
-The first slice does not automatically repair the base under each extracted
-object. Users can select an imported object layer or group and run
-`Power Tools > Underpaint Behind Active Layer...` to generate repaired background
-candidates. A later slice should run that underpaint step automatically as part
-of object decomposition.
+After a successful `object-decomposition` job, the editor applies default
+semantic metadata to each candidate. When a local vision helper is configured,
+the editor requires it to be reachable, sends the full source image plus each
+isolated region to the helper, and stores returned metadata:
+
+- `metadata.semanticName`
+- `metadata.depthRole`, using `foreground`, `midground`, `background`,
+  optional `sky-horizon`, or `ambiguous`
+- `metadata.sceneRole`, such as `subject`, `prop`, `structure`, or `scenery`
+- `metadata.repairRole`, using `keep-context` or `remove-from-base`
+- `metadata.promptPhrase`
+- `metadata.semanticConfidence`
+
+For decomposition results, `metadata.semanticName` is the specific part or
+layer name, while `metadata.groupLabel` is the parent object group used in the
+layer tree. The helper should group related pieces together, for example car
+panels under `Red Car`, body and clothing parts under `Woman`, and robot parts
+under `Robot`. When the image contains sky, clouds, far hills, vanishing roads,
+or a visible horizon, the helper may classify those distant pieces as
+`depthRole: "sky-horizon"` and group them under `Sky / Horizon`; this role is
+optional and should not be invented for images without that distance cue.
+
+Automatic base repair is currently disabled while the layer packet is being
+tested. The editor imports object layers, masks, groups, and semantic metadata
+without launching a follow-up diffusion generation. In this mode, the
+`base-remainder` layer is pinned into a dedicated `Base Remainder` group and
+stays visible underneath the extracted object layers so the imported stack
+reconstructs the original source. Viewed by itself, this layer is expected to
+look like a punched plate with transparent holes where extracted objects were
+removed. The source snapshot and mask debug layers stay hidden. The
+repaired-base scaffold still exists behind the feature flag: it builds a
+semantic repair source plate from
+`base-remainder` plus `keep-context` candidates, turns
+`remove-from-base` candidates into the repair mask, then runs an `inpaint`
+request with `prefillStyle: object-context-plate`.
+
+Users can still select an imported object layer or group and run
+`Power Tools > Underpaint Behind Active Layer...` for manual reruns or targeted
+background repair candidates.
 
 ## Prompt Helper
 
@@ -282,6 +375,13 @@ llama.cpp/OpenAI-compatible endpoint when configured, and otherwise falls back
 to a deterministic local rewrite so the UI remains usable without a running
 model.
 
+Vision-backed helper operations, including decomposition region classification,
+need a running OpenAI-compatible vision endpoint. When a helper endpoint is
+configured, object decomposition fails early if that endpoint is absent, and it
+fails before import if the helper classifies zero extracted regions. This is
+intentional: layer naming and grouping should not silently fall back to
+misleading semantics.
+
 To download the current 4B prompt-helper candidate:
 
 ```bash
@@ -292,25 +392,39 @@ The default download uses `unsloth/Qwen3.5-4B-GGUF`. The MTP variant was tried
 first, but the current local llama.cpp build failed to load it because of a
 missing MTP tensor, so the non-MTP GGUF is the safer prompt-helper target.
 
-To run a local llama.cpp prompt helper server using the Qwench runtime:
+For day-to-day testing, use the unified launcher:
 
 ```bash
-tools/ai/run-underpaint-prompt-helper-server.sh
+tools/ai/run-underpaint.sh
 ```
 
-Then launch Underpaint with the helper endpoint:
+It starts the prompt helper if needed, waits for the OpenAI-compatible
+`/v1/models` endpoint to become reachable, exports
+`UNDERPAINT_PROMPT_HELPER_URL`, configures the Diffusers worker, and launches the
+app. The model-specific launchers do the same helper wiring:
 
 ```bash
-UNDERPAINT_PROMPT_HELPER_URL=http://127.0.0.1:18080/v1 \
-  tools/ai/run-underpaint-juggernaut.sh
+tools/ai/run-underpaint-realvisxl-inpaint.sh
+tools/ai/run-underpaint-juggernaut.sh
+tools/ai/run-underpaint-juggernaut-x.sh
 ```
 
-The launcher defaults to `~/.qwench/runtime/bin/llama-server`, a Qwen GGUF under
-`~/.underpaint/models/prompt`, CPU execution via `--gpu-layers 0`, and the Qwen
-multimodal projector when present. It falls back to existing Qwench models when
-the Underpaint model directory has not been populated yet. Override these with
-`UNDERPAINT_PROMPT_HELPER_MODEL_PATH`, `UNDERPAINT_PROMPT_HELPER_MMPROJ`,
-`UNDERPAINT_PROMPT_HELPER_PORT`, or `UNDERPAINT_PROMPT_HELPER_GPU_LAYERS`.
+The helper launcher defaults to `~/.qwench/runtime/bin/llama-server`, a Qwen GGUF
+under `~/.underpaint/models/prompt`, CPU execution via `--gpu-layers 0`, and the
+Qwen multimodal projector when present. It falls back to existing Qwench models
+when the Underpaint model directory has not been populated yet. Override these
+with `UNDERPAINT_PROMPT_HELPER_MODEL_PATH`, `UNDERPAINT_PROMPT_HELPER_MMPROJ`,
+`UNDERPAINT_PROMPT_HELPER_PORT`, or `UNDERPAINT_PROMPT_HELPER_GPU_LAYERS`. Set
+`UNDERPAINT_START_PROMPT_HELPER=0` only when an external helper endpoint is
+already running and `UNDERPAINT_PROMPT_HELPER_URL` is set manually.
+
+Decomposition sends the helper a cropped region preview plus a downscaled
+whole-image reference. The defaults are intentionally small enough to avoid
+llama-server `request exceeds the available context size` failures:
+`UNDERPAINT_PROMPT_HELPER_REGION_EDGE=512`,
+`UNDERPAINT_PROMPT_HELPER_REGION_MIN_EDGE=256`, and
+`UNDERPAINT_PROMPT_HELPER_SOURCE_EDGE=640`. The launcher starts llama-server
+with `UNDERPAINT_PROMPT_HELPER_CTX=8192` unless overridden.
 
 ## Real Diffusers Worker
 
@@ -328,7 +442,7 @@ UNDERPAINT_AI_WORKER="$PWD/tools/ai/run-diffusers-worker.sh" \
 Or use the helper launcher:
 
 ```bash
-tools/ai/run-underpaint-diffusers.sh
+tools/ai/run-underpaint.sh
 ```
 
 The default model is:
@@ -364,6 +478,13 @@ The refiner settings support two backend names:
 
 - `diffusers`: runs through `StableDiffusionXLImg2ImgPipeline`.
 - `gguf`: experimental adapter lane for a future SDXL GGUF image runtime.
+
+`parameters.refiner.placement` controls where the optional refiner runs relative
+to the targeted face/body detailer:
+
+- `before-detail`: base generation, global refiner, then detected detail crops.
+- `after-detail`: base generation, detected detail crops, then one final global
+  refiner pass.
 
 GGUF diffusion checkpoints are not passed to Diffusers pipelines directly. When
 the GGUF refiner backend is selected, the worker expects an external adapter

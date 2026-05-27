@@ -23,6 +23,11 @@ from PIL import Image, ImageDraw, ImageFilter
 SCHEMA = "underpaint.ai-job.v1"
 DEFAULT_MODEL = "diffusers/stable-diffusion-xl-1.0-inpainting-0.1"
 DEFAULT_REFINER_MODEL = "stabilityai/stable-diffusion-xl-refiner-1.0"
+DEFAULT_SAM_MODEL = "facebook/sam-vit-base"
+DEFAULT_SAM_HQ_MODEL = "syscv-community/sam-hq-vit-base"
+DEFAULT_SAM_HQ_LOCAL_MODEL = (
+    Path.home() / ".underpaint/models/segmentation/sam-hq-vit-base"
+)
 DEFAULT_GGUF_REFINER_MODEL = (
     Path.home()
     / ".underpaint/models/refiner/stable-diffusion-xl-refiner-1.0-GGUF/"
@@ -34,6 +39,9 @@ DETAIL_MODEL_FILENAMES = {
     "body": "person_yolov8n-seg.pt",
     "hands": "hand_yolov8n.pt",
 }
+DEFAULT_OBJECT_DETECTOR_MODEL = (
+    Path.home() / ".underpaint/models/detection/yolo11n-seg.pt"
+)
 DEBUG_ENABLED = False
 DEBUG_LOG_PATH: Path | None = None
 DEBUG_EVENTS_PATH: Path | None = None
@@ -273,6 +281,65 @@ def normalized_generation_model(parameters: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def normalized_segmentation_backend(parameters: dict[str, Any]) -> dict[str, Any]:
+    model_id = str(
+        os.environ.get("UNDERPAINT_SEGMENTATION_MODEL_ID")
+        or parameters.get("segmentationModelId")
+        or ""
+    ).strip()
+    registry_entry = model_registry_entry(model_id) if model_id else {}
+    backend = str(
+        os.environ.get("UNDERPAINT_SEGMENTATION_BACKEND")
+        or parameters.get("segmentationBackend")
+        or registry_entry.get("backend")
+        or "sam"
+    ).strip().lower()
+    backend_aliases = {
+        "hq-sam": "sam-hq",
+        "hqsam": "sam-hq",
+        "sam-hq-transformers": "sam-hq",
+        "samhq": "sam-hq",
+        "transformers-sam-hq": "sam-hq",
+        "sam1": "sam",
+        "sam-vit": "sam",
+        "transformers-sam": "sam",
+    }
+    backend = backend_aliases.get(backend, backend)
+    if backend not in {"sam", "sam-hq"}:
+        backend = "sam"
+
+    if backend == "sam-hq":
+        default_model = (
+            str(DEFAULT_SAM_HQ_LOCAL_MODEL)
+            if DEFAULT_SAM_HQ_LOCAL_MODEL.exists()
+            else DEFAULT_SAM_HQ_MODEL
+        )
+        env_model = (
+            os.environ.get("UNDERPAINT_SAM_HQ_MODEL")
+            or os.environ.get("UNDERPAINT_SEGMENTATION_MODEL")
+        )
+    else:
+        default_model = DEFAULT_SAM_MODEL
+        env_model = (
+            os.environ.get("UNDERPAINT_SAM_MODEL")
+            or os.environ.get("UNDERPAINT_SEGMENTATION_MODEL")
+        )
+
+    model = str(
+        env_model
+        or parameters.get("segmentationModel")
+        or parameters.get("model")
+        or registry_entry.get("model")
+        or default_model
+    ).strip()
+    return {
+        "backend": backend,
+        "modelId": model_id,
+        "displayName": str(registry_entry.get("displayName", "")),
+        "model": expand_model_path(model),
+    }
+
+
 def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
     raw = parameters.get("refiner", {})
     if not isinstance(raw, dict):
@@ -313,15 +380,23 @@ def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
         model = str(DEFAULT_GGUF_REFINER_MODEL) if backend == "gguf" else DEFAULT_REFINER_MODEL
     if backend == "gguf" and model == DEFAULT_REFINER_MODEL:
         model = str(DEFAULT_GGUF_REFINER_MODEL)
+    placement = str(raw.get("placement", "before-detail")).strip().lower()
+    if placement not in {"before-detail", "after-detail"}:
+        placement = "before-detail"
+    strength = max(0.05, min(float(raw.get("strength", 0.25)), 1.0))
+    steps = max(1, min(int(raw.get("steps", 20)), 200))
+    if strength > 0.0 and int(steps * strength) < 1:
+        steps = max(steps, math.ceil(1.0 / strength))
     return {
         "enabled": bool(raw.get("enabled", False)),
         "modelId": model_id,
         "backend": backend,
         "model": expand_model_path(model),
         "displayName": str(registry_entry.get("displayName", "")),
-        "strength": max(0.05, min(float(raw.get("strength", 0.25)), 1.0)),
-        "steps": max(1, min(int(raw.get("steps", 20)), 200)),
+        "strength": strength,
+        "steps": steps,
         "scheduler": normalize_scheduler_name(raw.get("scheduler", "dpmpp-3m-karras")),
+        "placement": placement,
         "runner": str(os.environ.get("UNDERPAINT_GGUF_REFINER_WORKER", "")).strip(),
     }
 
@@ -334,6 +409,7 @@ def refiner_diagnostics(refiner: dict[str, Any]) -> dict[str, Any]:
         "strength": refiner["strength"],
         "steps": refiner["steps"],
         "scheduler": refiner["scheduler"],
+        "placement": refiner["placement"],
         "appliedCandidates": 0,
     }
     diagnostics["status"] = "pending" if refiner["enabled"] else "disabled"
@@ -428,6 +504,11 @@ def detail_model_path(region: str) -> Path:
     return detail_model_dir() / DETAIL_MODEL_FILENAMES[region]
 
 
+def object_detector_model_path() -> Path:
+    configured = os.environ.get("UNDERPAINT_OBJECT_DETECTOR_MODEL", "").strip()
+    return Path(configured).expanduser() if configured else DEFAULT_OBJECT_DETECTOR_MODEL
+
+
 def load_detail_detectors(detail_pass: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     report = detail_pass_diagnostics(detail_pass)
     if report["status"] != "pending":
@@ -513,6 +594,21 @@ def unload_pipeline(pipe: Any, torch: Any, label: str) -> None:
         except Exception:
             pass
     debug_event("model-unload-complete", {"label": label})
+
+
+def release_cuda_memory() -> None:
+    gc.collect()
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def prepare_pipeline_for_device(
@@ -781,6 +877,14 @@ def mask_iou(left: Any, right: Any) -> float:
     return float(intersection) / float(union) if union else 0.0
 
 
+def mask_overlap_of_smaller(left: Any, right: Any) -> float:
+    import numpy as np
+
+    intersection = int(np.logical_and(left, right).sum())
+    smaller = min(int(np.count_nonzero(left)), int(np.count_nonzero(right)))
+    return float(intersection) / float(smaller) if smaller else 0.0
+
+
 def mask_edge_count(bounds: tuple[int, int, int, int], width: int, height: int, margin: int = 2) -> int:
     left, top, right, bottom = bounds
     return int(left <= margin) + int(top <= margin) + int(right >= width - margin) + int(bottom >= height - margin)
@@ -806,12 +910,35 @@ def is_background_like_mask(
     )
 
 
+def is_sparse_sprawling_mask(
+    mask: Any,
+    bounds: tuple[int, int, int, int],
+    width: int,
+    height: int,
+) -> bool:
+    import numpy as np
+
+    total_pixels = max(1, width * height)
+    left, top, right, bottom = bounds
+    bounds_width = max(1, right - left)
+    bounds_height = max(1, bottom - top)
+    bounds_area = bounds_width * bounds_height
+    bounds_ratio = float(bounds_area) / total_pixels
+    density = float(np.count_nonzero(mask)) / bounds_area
+    return (
+        bounds_ratio >= 0.16
+        and density <= 0.025
+        and (bounds_width >= width * 0.45 or bounds_height >= height * 0.45)
+    )
+
+
 def object_mask_utility(
     area: int,
     bounds: tuple[int, int, int, int],
     width: int,
     height: int,
     sam_score: float,
+    prior: str = "",
 ) -> float:
     total_pixels = max(1, width * height)
     area_ratio = float(area) / total_pixels
@@ -834,11 +961,32 @@ def object_mask_utility(
         utility -= 0.25
     if edge_count >= 3:
         utility -= 0.25
+    if prior == "sam-grid" and edge_count <= 1:
+        # Grid masks are the catch-all path for props, notes, signs, odd
+        # creatures, and background objects that generic detectors miss.
+        if 0.002 <= area_ratio <= 0.08:
+            utility += 0.12
+        elif area_ratio < 0.015:
+            utility += 0.05
     return utility
 
 
 def remove_small_mask_components(mask: Any, min_component_area: int) -> Any:
     import numpy as np
+
+    try:
+        import cv2
+
+        labels_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+            mask.astype("uint8"), 8
+        )
+        if labels_count <= 1:
+            return np.zeros(mask.shape, dtype=bool)
+        keep = stats[:, cv2.CC_STAT_AREA] >= min_component_area
+        keep[0] = False
+        return keep[labels]
+    except Exception:
+        pass
 
     height, width = mask.shape
     visited = np.zeros(mask.shape, dtype=bool)
@@ -875,6 +1023,34 @@ def remove_small_mask_components(mask: Any, min_component_area: int) -> Any:
 
 def fill_small_mask_holes(mask: Any, max_hole_area: int) -> Any:
     import numpy as np
+
+    try:
+        import cv2
+
+        background = (~mask).astype("uint8")
+        labels_count, labels, stats, _ = cv2.connectedComponentsWithStats(
+            background, 8
+        )
+        if labels_count <= 1:
+            return mask
+        height, width = mask.shape
+        cleaned = mask.copy()
+        for label in range(1, labels_count):
+            component = labels == label
+            ys, xs = np.where(component)
+            if xs.size == 0 or ys.size == 0:
+                continue
+            touches_edge = (
+                xs.min() == 0
+                or ys.min() == 0
+                or xs.max() == width - 1
+                or ys.max() == height - 1
+            )
+            if not touches_edge and stats[label, cv2.CC_STAT_AREA] <= max_hole_area:
+                cleaned[component] = True
+        return cleaned
+    except Exception:
+        pass
 
     height, width = mask.shape
     outside = np.zeros(mask.shape, dtype=bool)
@@ -967,10 +1143,665 @@ def erode_boolean_mask(mask: Any, radius: int) -> Any:
     return np.asarray(eroded) > 0
 
 
+def dilate_boolean_mask(mask: Any, radius: int) -> Any:
+    import numpy as np
+
+    if radius <= 0:
+        return mask
+    size = max(3, radius * 2 + 1)
+    if size % 2 == 0:
+        size += 1
+    mask_image = Image.fromarray((mask.astype("uint8") * 255), mode="L")
+    dilated = mask_image.filter(ImageFilter.MaxFilter(size=size))
+    return np.asarray(dilated) > 0
+
+
 def source_with_alpha(source: Image.Image, alpha: Image.Image) -> Image.Image:
     layer = source.copy()
     layer.putalpha(alpha)
     return layer
+
+
+def load_segmentation_model(segmentation: dict[str, Any], device: str) -> tuple[Any, Any]:
+    if segmentation["backend"] == "sam-hq":
+        from transformers import SamHQModel, SamHQProcessor
+
+        processor = SamHQProcessor.from_pretrained(segmentation["model"])
+        model = SamHQModel.from_pretrained(segmentation["model"]).to(device)
+    else:
+        from transformers import SamModel, SamProcessor
+
+        processor = SamProcessor.from_pretrained(segmentation["model"])
+        model = SamModel.from_pretrained(segmentation["model"]).to(device)
+    return processor, model
+
+
+def clamp_box(
+    box: tuple[float, float, float, float] | list[float],
+    width: int,
+    height: int,
+) -> tuple[float, float, float, float]:
+    left, top, right, bottom = [float(value) for value in box]
+    left = max(0.0, min(left, float(width - 1)))
+    top = max(0.0, min(top, float(height - 1)))
+    right = max(left + 1.0, min(right, float(width)))
+    bottom = max(top + 1.0, min(bottom, float(height)))
+    return left, top, right, bottom
+
+
+def expand_box(
+    box: tuple[float, float, float, float],
+    width: int,
+    height: int,
+    pct: float = 0.06,
+    min_px: int = 10,
+) -> tuple[float, float, float, float]:
+    left, top, right, bottom = box
+    pad_x = max(float(min_px), (right - left) * pct)
+    pad_y = max(float(min_px), (bottom - top) * pct)
+    return clamp_box((left - pad_x, top - pad_y, right + pad_x, bottom + pad_y), width, height)
+
+
+def box_area(box: tuple[float, float, float, float]) -> float:
+    left, top, right, bottom = box
+    return max(0.0, right - left) * max(0.0, bottom - top)
+
+
+def box_overlap_of_smaller(
+    left_box: tuple[float, float, float, float],
+    right_box: tuple[float, float, float, float],
+) -> float:
+    left = max(left_box[0], right_box[0])
+    top = max(left_box[1], right_box[1])
+    right = min(left_box[2], right_box[2])
+    bottom = min(left_box[3], right_box[3])
+    intersection = max(0.0, right - left) * max(0.0, bottom - top)
+    smaller = min(box_area(left_box), box_area(right_box))
+    return intersection / smaller if smaller > 0.0 else 0.0
+
+
+def merged_person_detection_clusters(
+    detections: list[dict[str, Any]],
+    width: int,
+    height: int,
+    overlap_threshold: float = 0.50,
+) -> list[dict[str, Any]]:
+    import numpy as np
+
+    clusters: list[dict[str, Any]] = []
+    for detection in sorted(detections, key=lambda item: item["score"], reverse=True):
+        detection_box = detection["box"]
+        detection_mask = detection.get("yoloMask")
+        matched: dict[str, Any] | None = None
+        for cluster in clusters:
+            cluster_mask = cluster.get("yoloMask")
+            if detection_mask is not None and cluster_mask is not None:
+                overlap = mask_overlap_of_smaller(detection_mask, cluster_mask)
+            else:
+                overlap = box_overlap_of_smaller(detection_box, cluster["box"])
+            if overlap >= overlap_threshold:
+                matched = cluster
+                break
+        if matched is None:
+            clusters.append(
+                {
+                    "box": detection_box,
+                    "score": detection["score"],
+                    "detections": [detection],
+                    "yoloMask": detection_mask,
+                }
+            )
+            continue
+
+        left = min(matched["box"][0], detection_box[0])
+        top = min(matched["box"][1], detection_box[1])
+        right = max(matched["box"][2], detection_box[2])
+        bottom = max(matched["box"][3], detection_box[3])
+        matched["box"] = clamp_box((left, top, right, bottom), width, height)
+        matched["score"] = max(float(matched["score"]), float(detection["score"]))
+        matched["detections"].append(detection)
+        if detection_mask is not None:
+            if matched.get("yoloMask") is None:
+                matched["yoloMask"] = detection_mask
+            else:
+                matched["yoloMask"] = np.logical_or(matched["yoloMask"], detection_mask)
+    return clusters
+
+
+def yolo_person_prior_masks(
+    source: Image.Image,
+    source_alpha_mask: Any,
+    person_min_area: int,
+    person_min_area_pct: float,
+    device: str,
+    confidence: float,
+    max_regions: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    import numpy as np
+
+    report: dict[str, Any] = {
+        "enabled": True,
+        "status": "pending",
+        "model": str(detail_model_path("body")),
+        "rawDetections": 0,
+        "acceptedDetections": 0,
+        "rejectedDetections": 0,
+        "mergedDetections": 0,
+        "maskBackend": "sam-box",
+        "minAreaPixels": person_min_area,
+        "minAreaPct": person_min_area_pct,
+        "confidence": confidence,
+        "maxRegions": max_regions,
+        "rejectionCounts": {},
+    }
+    model_path = detail_model_path("body")
+    if not model_path.is_file():
+        report["status"] = "model-missing"
+        return [], report
+
+    try:
+        from ultralytics import YOLO
+    except Exception as exc:  # noqa: BLE001
+        report["status"] = "dependency-unavailable"
+        report["message"] = f"Ultralytics is not installed: {exc}"
+        return [], report
+
+    try:
+        model = YOLO(str(model_path))
+        results = model.predict(
+            source=source.convert("RGB"),
+            conf=confidence,
+            verbose=False,
+            device=0 if device == "cuda" else "cpu",
+            retina_masks=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        report["status"] = "failed"
+        report["message"] = str(exc)
+        return [], report
+
+    detections: list[dict[str, Any]] = []
+    rejection_counts: dict[str, int] = {}
+
+    def reject(reason: str) -> None:
+        rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+        report["rejectedDetections"] = int(report["rejectedDetections"]) + 1
+
+    for result in results:
+        boxes = getattr(result, "boxes", None)
+        if boxes is None or boxes.xyxy is None:
+            continue
+        xyxy = boxes.xyxy.detach().cpu().tolist()
+        confidences = boxes.conf.detach().cpu().tolist()
+        classes = (
+            boxes.cls.detach().cpu().tolist()
+            if getattr(boxes, "cls", None) is not None
+            else [None] * len(xyxy)
+        )
+        result_masks = getattr(result, "masks", None)
+        mask_tensors = (
+            result_masks.data.detach().cpu().numpy()
+            if result_masks is not None and getattr(result_masks, "data", None) is not None
+            else None
+        )
+        names = getattr(model, "names", {})
+        for detection_index, (box, confidence_value, class_id) in enumerate(
+            zip(xyxy, confidences, classes)
+        ):
+            report["rawDetections"] = int(report["rawDetections"]) + 1
+            class_name = ""
+            try:
+                if isinstance(names, dict):
+                    class_name = str(names.get(int(class_id), "")).strip().lower()
+            except Exception:
+                class_name = ""
+            if class_name and class_name != "person":
+                reject(f"class:{class_name}")
+                continue
+
+            clamped_box = clamp_box(tuple(box), source.width, source.height)
+            if box_area(clamped_box) < person_min_area:
+                reject("box-too-small")
+                continue
+
+            yolo_mask = None
+            if mask_tensors is not None and detection_index < len(mask_tensors):
+                mask_image = Image.fromarray(
+                    (mask_tensors[detection_index] > 0.5).astype("uint8") * 255,
+                    mode="L",
+                )
+                if mask_image.size != source.size:
+                    mask_image = mask_image.resize(source.size, Image.Resampling.NEAREST)
+                yolo_mask = np.logical_and(np.asarray(mask_image) > 0, source_alpha_mask)
+
+            detections.append(
+                {
+                    "box": clamped_box,
+                    "score": float(confidence_value),
+                    "className": class_name or "person",
+                    "detectionIndex": detection_index,
+                    "yoloMask": yolo_mask,
+                }
+            )
+
+    clusters = merged_person_detection_clusters(detections, source.width, source.height)
+    clusters = sorted(clusters, key=lambda item: item["score"], reverse=True)[:max_regions]
+    report["mergedDetections"] = len(clusters)
+    report["mergedAwayDetections"] = max(0, len(detections) - len(clusters))
+
+    if not clusters:
+        report["rejectionCounts"] = rejection_counts
+        report["status"] = "no-detections"
+        return [], report
+
+    person_sam_model = expand_model_path(
+        os.environ.get("UNDERPAINT_PERSON_PRIOR_SAM_MODEL") or DEFAULT_SAM_MODEL
+    )
+    report["samModel"] = person_sam_model
+    try:
+        import torch
+        from transformers import SamModel, SamProcessor
+
+        processor = SamProcessor.from_pretrained(person_sam_model)
+        model = SamModel.from_pretrained(person_sam_model).to(device)
+        model.eval()
+        box_prompts = [
+            list(expand_box(cluster["box"], source.width, source.height))
+            for cluster in clusters
+        ]
+        inputs = processor(source.convert("RGB"), input_boxes=[box_prompts], return_tensors="pt")
+        inputs = {key: value.to(device) for key, value in inputs.items()}
+        with torch.no_grad():
+            outputs = model(**inputs)
+        processed_masks = processor.image_processor.post_process_masks(
+            outputs.pred_masks.cpu(),
+            inputs["original_sizes"].cpu(),
+            inputs["reshaped_input_sizes"].cpu(),
+        )[0]
+        iou_scores = outputs.iou_scores.detach().cpu()[0]
+    except Exception as exc:  # noqa: BLE001
+        report["status"] = "sam-box-failed"
+        report["message"] = str(exc)
+        processed_masks = None
+        iou_scores = None
+    finally:
+        try:
+            if "model" in locals():
+                del model
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    masks: list[dict[str, Any]] = []
+    for cluster_index, cluster in enumerate(clusters):
+        fallback_masks = [
+            detection["yoloMask"]
+            for detection in cluster["detections"]
+            if detection.get("yoloMask") is not None
+        ]
+        yolo_union_mask = None
+        if fallback_masks:
+            yolo_union_mask = fallback_masks[0].copy()
+            for fallback in fallback_masks[1:]:
+                yolo_union_mask = np.logical_or(yolo_union_mask, fallback)
+            yolo_union_mask = np.logical_and(yolo_union_mask, source_alpha_mask)
+
+        selected_mask = None
+        selected_score = float(cluster["score"])
+        selected_option = -1
+        selected_backend = "sam-box"
+        if processed_masks is not None and iou_scores is not None:
+            option_scores = iou_scores[cluster_index]
+            option_indices = np.argsort(option_scores.numpy())[::-1]
+            for option_index in option_indices:
+                mask = processed_masks[cluster_index][int(option_index)].numpy().astype(bool)
+                mask = np.logical_and(mask, source_alpha_mask)
+                area = int(np.count_nonzero(mask))
+                bounds = mask_bounds(mask)
+                if area < person_min_area or bounds is None:
+                    reject("sam-too-small")
+                    continue
+                if is_background_like_mask(mask, bounds, source.width, source.height):
+                    reject("sam-background-like")
+                    continue
+                if is_sparse_sprawling_mask(mask, bounds, source.width, source.height):
+                    reject("sam-sparse-sprawl")
+                    continue
+                selected_mask = mask
+                selected_score = float(option_scores[int(option_index)].item())
+                selected_option = int(option_index)
+                break
+
+        if selected_mask is not None and yolo_union_mask is not None:
+            yolo_area = int(np.count_nonzero(yolo_union_mask))
+            sam_area = int(np.count_nonzero(selected_mask))
+            yolo_overlap = mask_overlap_of_smaller(selected_mask, yolo_union_mask)
+            if (
+                yolo_area >= person_min_area
+                and (
+                    yolo_overlap < 0.70
+                    or sam_area < yolo_area * 0.65
+                    or sam_area > yolo_area * 1.80
+                )
+            ):
+                selected_mask = yolo_union_mask
+                selected_backend = "yolo-mask-correction"
+                report["correctedWithYoloMask"] = (
+                    int(report.get("correctedWithYoloMask", 0)) + 1
+                )
+
+        if selected_mask is None:
+            if yolo_union_mask is not None:
+                selected_mask = yolo_union_mask
+                selected_backend = "yolo-mask-fallback"
+                report["fallbackDetections"] = int(report.get("fallbackDetections", 0)) + 1
+            else:
+                reject("no-valid-mask")
+                continue
+
+        selected_mask = np.logical_and(selected_mask, source_alpha_mask)
+        area = int(np.count_nonzero(selected_mask))
+        bounds = mask_bounds(selected_mask)
+        if area < person_min_area or bounds is None:
+            reject("too-small")
+            continue
+        if is_background_like_mask(selected_mask, bounds, source.width, source.height):
+            reject("background-like")
+            continue
+
+        masks.append(
+            {
+                "mask": selected_mask,
+                "area": area,
+                "rawArea": area,
+                "bounds": bounds,
+                "rawBounds": bounds,
+                "score": selected_score,
+                "utility": object_mask_utility(
+                    area, bounds, source.width, source.height, selected_score
+                )
+                + 0.45,
+                "pointIndex": -1,
+                "optionIndex": selected_option,
+                "prior": "person-yolo-sam-box"
+                if selected_backend == "sam-box"
+                else selected_backend,
+                "semanticName": "person",
+                "groupId": "people",
+                "groupLabel": "People",
+                "className": "person",
+                "boxPrompt": list(expand_box(cluster["box"], source.width, source.height)),
+                "mergedDetectionCount": len(cluster["detections"]),
+                "minAreaOverride": person_min_area,
+            }
+        )
+        report["acceptedDetections"] = int(report["acceptedDetections"]) + 1
+
+    report["rejectionCounts"] = rejection_counts
+    report["status"] = "applied" if masks else "no-detections"
+    release_cuda_memory()
+    return masks, report
+
+
+def object_detector_group(class_name: str) -> tuple[str, str]:
+    normalized = class_name.strip().lower()
+    if normalized in {
+        "bicycle",
+        "car",
+        "motorcycle",
+        "airplane",
+        "bus",
+        "train",
+        "truck",
+        "boat",
+    }:
+        return "vehicles", "Vehicles"
+    if normalized in {
+        "bird",
+        "cat",
+        "dog",
+        "horse",
+        "sheep",
+        "cow",
+        "elephant",
+        "bear",
+        "zebra",
+        "giraffe",
+    }:
+        return "animals", "Animals"
+    if normalized in {
+        "chair",
+        "couch",
+        "potted plant",
+        "bed",
+        "dining table",
+        "toilet",
+        "bench",
+    }:
+        return "furniture-and-fixtures", "Furniture and Fixtures"
+    if normalized in {
+        "traffic light",
+        "fire hydrant",
+        "stop sign",
+        "parking meter",
+        "sign",
+    }:
+        return "signs-and-street-objects", "Signs and Street Objects"
+    if normalized in {
+        "backpack",
+        "umbrella",
+        "handbag",
+        "tie",
+        "suitcase",
+        "sports ball",
+        "kite",
+        "baseball bat",
+        "baseball glove",
+        "skateboard",
+        "surfboard",
+        "tennis racket",
+    }:
+        return "held-and-portable-objects", "Held and Portable Objects"
+    if normalized in {
+        "bottle",
+        "wine glass",
+        "cup",
+        "fork",
+        "knife",
+        "spoon",
+        "bowl",
+        "banana",
+        "apple",
+        "sandwich",
+        "orange",
+        "broccoli",
+        "carrot",
+        "hot dog",
+        "pizza",
+        "donut",
+        "cake",
+    }:
+        return "food-and-table-objects", "Food and Table Objects"
+    if normalized in {
+        "tv",
+        "laptop",
+        "mouse",
+        "remote",
+        "keyboard",
+        "cell phone",
+        "microwave",
+        "oven",
+        "toaster",
+        "sink",
+        "refrigerator",
+        "clock",
+    }:
+        return "devices-and-appliances", "Devices and Appliances"
+    return "detected-objects", "Detected Objects"
+
+
+def yolo_object_prior_masks(
+    source: Image.Image,
+    source_alpha_mask: Any,
+    object_min_area: int,
+    object_min_area_pct: float,
+    device: str,
+    confidence: float,
+    max_regions: int,
+    image_size: int,
+    *,
+    skip_people: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    import numpy as np
+
+    model_path = object_detector_model_path()
+    report: dict[str, Any] = {
+        "enabled": True,
+        "status": "pending",
+        "model": str(model_path),
+        "rawDetections": 0,
+        "acceptedDetections": 0,
+        "rejectedDetections": 0,
+        "minAreaPixels": object_min_area,
+        "minAreaPct": object_min_area_pct,
+        "confidence": confidence,
+        "maxRegions": max_regions,
+        "imageSize": image_size,
+        "skipPeople": skip_people,
+        "rejectionCounts": {},
+    }
+    if not model_path.is_file():
+        report["status"] = "model-missing"
+        return [], report
+
+    try:
+        from ultralytics import YOLO
+    except Exception as exc:  # noqa: BLE001
+        report["status"] = "dependency-unavailable"
+        report["message"] = f"Ultralytics is not installed: {exc}"
+        return [], report
+
+    try:
+        model = YOLO(str(model_path))
+        results = model.predict(
+            source=source.convert("RGB"),
+            conf=confidence,
+            imgsz=image_size,
+            verbose=False,
+            device=0 if device == "cuda" else "cpu",
+            retina_masks=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        report["status"] = "failed"
+        report["message"] = str(exc)
+        return [], report
+
+    masks: list[dict[str, Any]] = []
+    rejection_counts: dict[str, int] = {}
+
+    def reject(reason: str) -> None:
+        rejection_counts[reason] = rejection_counts.get(reason, 0) + 1
+        report["rejectedDetections"] = int(report["rejectedDetections"]) + 1
+
+    names = getattr(model, "names", {})
+    for result in results:
+        boxes = getattr(result, "boxes", None)
+        if boxes is None or boxes.xyxy is None:
+            continue
+        xyxy = boxes.xyxy.detach().cpu().tolist()
+        confidences = boxes.conf.detach().cpu().tolist()
+        classes = (
+            boxes.cls.detach().cpu().tolist()
+            if getattr(boxes, "cls", None) is not None
+            else [None] * len(xyxy)
+        )
+        result_masks = getattr(result, "masks", None)
+        mask_tensors = (
+            result_masks.data.detach().cpu().numpy()
+            if result_masks is not None and getattr(result_masks, "data", None) is not None
+            else None
+        )
+        for detection_index, (box, confidence_value, class_id) in enumerate(
+            zip(xyxy, confidences, classes)
+        ):
+            report["rawDetections"] = int(report["rawDetections"]) + 1
+            class_name = ""
+            try:
+                if isinstance(names, dict):
+                    class_name = str(names.get(int(class_id), "")).strip().lower()
+            except Exception:
+                class_name = ""
+            if not class_name:
+                reject("unknown-class")
+                continue
+            if skip_people and class_name == "person":
+                reject("person-handled-by-person-prior")
+                continue
+            clamped_box = clamp_box(tuple(box), source.width, source.height)
+            if box_area(clamped_box) < object_min_area:
+                reject("box-too-small")
+                continue
+            if mask_tensors is None or detection_index >= len(mask_tensors):
+                reject("mask-missing")
+                continue
+            mask_image = Image.fromarray(
+                (mask_tensors[detection_index] > 0.5).astype("uint8") * 255,
+                mode="L",
+            )
+            if mask_image.size != source.size:
+                mask_image = mask_image.resize(source.size, Image.Resampling.NEAREST)
+            mask = np.logical_and(np.asarray(mask_image) > 0, source_alpha_mask)
+            area = int(np.count_nonzero(mask))
+            if area < object_min_area:
+                reject("mask-too-small")
+                continue
+            bounds = mask_bounds(mask)
+            if bounds is None:
+                reject("mask-empty")
+                continue
+            if is_background_like_mask(mask, bounds, source.width, source.height):
+                reject("background-like")
+                continue
+            if is_sparse_sprawling_mask(mask, bounds, source.width, source.height):
+                reject("sparse-sprawl")
+                continue
+
+            group_id, group_label = object_detector_group(class_name)
+            masks.append(
+                {
+                    "mask": mask,
+                    "area": area,
+                    "rawArea": area,
+                    "bounds": bounds,
+                    "rawBounds": bounds,
+                    "score": float(confidence_value),
+                    "utility": object_mask_utility(
+                        area, bounds, source.width, source.height, float(confidence_value)
+                    )
+                    + 0.36,
+                    "pointIndex": -1,
+                    "optionIndex": -1,
+                    "prior": "object-yolo-seg",
+                    "semanticName": class_name,
+                    "groupId": group_id,
+                    "groupLabel": group_label,
+                    "className": class_name,
+                    "boxPrompt": list(clamped_box),
+                    "mergedDetectionCount": 1,
+                    "minAreaOverride": object_min_area,
+                    "detectorModel": str(model_path),
+                }
+            )
+
+    masks.sort(key=lambda item: (item["utility"], item["score"], item["area"]), reverse=True)
+    masks = masks[:max_regions]
+    report["acceptedDetections"] = len(masks)
+    report["rejectionCounts"] = rejection_counts
+    report["classes"] = sorted({str(item["className"]) for item in masks})
+    report["status"] = "applied" if masks else "no-detections"
+    release_cuda_memory()
+    return masks, report
 
 
 def object_region_group(area_ratio: float) -> tuple[str, str]:
@@ -998,35 +1829,65 @@ def write_object_decomposition_response(
     except Exception as exc:  # noqa: BLE001
         return fail(response_path, request_id, f"Could not load source image: {exc}", 2)
 
+    parameters = request.get("parameters", {})
+    segmentation = normalized_segmentation_backend(parameters)
+    segmentation_backend = segmentation["backend"]
+    segmentation_model = segmentation["model"]
+
     try:
         import numpy as np
         import torch
-        from transformers import SamModel, SamProcessor
     except Exception as exc:  # noqa: BLE001
         return fail(
             response_path,
             request_id,
-            f"SAM object decomposition dependencies are not installed: {exc}",
+            f"Object decomposition dependencies are not installed: {exc}",
             2,
         )
 
-    parameters = request.get("parameters", {})
     requested_mask_count = int(parameters.get("maxMasks", parameters.get("maxRegions", 24)))
     max_masks = max(1, min(requested_mask_count, 200))
-    min_area_pct = max(1, min(int(parameters.get("minRegionAreaPct", 1)), 20))
+    min_area_pct = max(0.05, min(float(parameters.get("minRegionAreaPct", 0.12)), 20.0))
     min_area = int(source.width * source.height * (min_area_pct / 100.0))
-    raw_depth = str(parameters.get("decompositionDepth", "balanced")).strip().lower()
+    person_prior_enabled = bool(parameters.get("personPriorEnabled", True))
+    person_prior_confidence = max(
+        0.01, min(float(parameters.get("personPriorConfidence", 0.05)), 1.0)
+    )
+    person_prior_max_regions = max(
+        1, min(int(parameters.get("personPriorMaxRegions", 64)), 128)
+    )
+    person_prior_min_area_pct = max(
+        0.01, min(float(parameters.get("personPriorMinAreaPct", 0.05)), 10.0)
+    )
+    person_prior_min_area = max(
+        1, int(source.width * source.height * (person_prior_min_area_pct / 100.0))
+    )
+    object_prior_enabled = bool(parameters.get("objectPriorEnabled", True))
+    object_prior_confidence = max(
+        0.01, min(float(parameters.get("objectPriorConfidence", 0.12)), 1.0)
+    )
+    object_prior_max_regions = max(
+        1, min(int(parameters.get("objectPriorMaxRegions", 64)), 128)
+    )
+    object_prior_min_area_pct = max(
+        0.01, min(float(parameters.get("objectPriorMinAreaPct", 0.03)), 10.0)
+    )
+    object_prior_min_area = max(
+        1, int(source.width * source.height * (object_prior_min_area_pct / 100.0))
+    )
+    object_prior_image_size = max(
+        640, min(int(parameters.get("objectPriorImageSize", 1280)), 2048)
+    )
+    sam_grid_fallback_enabled = bool(
+        parameters.get("samGridFallbackEnabled", True)
+    )
+    raw_depth = str(parameters.get("decompositionDepth", "detailed")).strip().lower()
     decomposition_depth = raw_depth if raw_depth in {
         "clean",
         "balanced",
         "detailed",
         "exhaustive",
     } else "balanced"
-    model_id = str(
-        parameters.get("model")
-        or os.environ.get("UNDERPAINT_SAM_MODEL")
-        or "facebook/sam-vit-base"
-    )
     allow_cpu = os.environ.get("UNDERPAINT_AI_ALLOW_CPU") == "1"
     if torch.cuda.is_available():
         device = "cuda"
@@ -1045,93 +1906,250 @@ def write_object_decomposition_response(
     source_alpha_mask = np.asarray(source.getchannel("A")) > 0
     total_pixels = max(1, source.width * source.height)
     grid_size = decomposition_grid_size(decomposition_depth)
-    point_batch: list[list[list[int]]] = []
-    for gy in range(grid_size):
-        y = round((gy + 0.5) * source.height / grid_size)
-        for gx in range(grid_size):
-            x = round((gx + 0.5) * source.width / grid_size)
-            point_batch.append([[int(x), int(y)]])
 
-    try:
-        processor = SamProcessor.from_pretrained(model_id)
-        model = SamModel.from_pretrained(model_id).to(device)
-        model.eval()
-        inputs = processor(
-            rgb,
-            input_points=[point_batch],
-            return_tensors="pt",
-        )
-        inputs = {key: value.to(device) for key, value in inputs.items()}
-        with torch.no_grad():
-            outputs = model(**inputs)
-        processed_masks = processor.image_processor.post_process_masks(
-            outputs.pred_masks.cpu(),
-            inputs["original_sizes"].cpu(),
-            inputs["reshaped_input_sizes"].cpu(),
-        )[0]
-        iou_scores = outputs.iou_scores.detach().cpu()[0]
-    except Exception as exc:  # noqa: BLE001
-        return fail(
-            response_path,
-            request_id,
-            f"SAM object decomposition failed: {exc}",
-            2,
-        )
-    finally:
-        try:
-            del model
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
-
+    rejection_counts = {
+        "rawTooSmall": 0,
+        "rawEmpty": 0,
+        "rawBackgroundLike": 0,
+        "rawSparseSprawl": 0,
+        "cleanedTooSmall": 0,
+        "cleanedEmpty": 0,
+        "cleanedBackgroundLike": 0,
+        "cleanedSparseSprawl": 0,
+        "overlapRejected": 0,
+        "duplicateRejected": 0,
+        "personPriorDuplicateRejected": 0,
+    }
     raw_masks: list[dict[str, Any]] = []
-    for point_index in range(processed_masks.shape[0]):
-        for option_index in range(processed_masks.shape[1]):
-            score = float(iou_scores[point_index][option_index].item())
-            mask = processed_masks[point_index][option_index].numpy().astype(bool)
-            raw_area = int(np.count_nonzero(mask))
-            if raw_area < min_area:
-                continue
-            raw_bounds = mask_bounds(mask)
-            if raw_bounds is None:
-                continue
-            if is_background_like_mask(mask, raw_bounds, source.width, source.height):
-                continue
+    person_prior_report: dict[str, Any] = {
+        "enabled": person_prior_enabled,
+        "status": "disabled" if not person_prior_enabled else "pending",
+    }
+    if person_prior_enabled:
+        person_prior_masks, person_prior_report = yolo_person_prior_masks(
+            source,
+            source_alpha_mask,
+            person_prior_min_area,
+            person_prior_min_area_pct,
+            device,
+            person_prior_confidence,
+            person_prior_max_regions,
+        )
+        raw_masks.extend(person_prior_masks)
+        debug_event(
+            "object-decomposition-person-prior",
+            {
+                "requestId": request_id,
+                "report": person_prior_report,
+            },
+        )
+    object_prior_report: dict[str, Any] = {
+        "enabled": object_prior_enabled,
+        "status": "disabled" if not object_prior_enabled else "pending",
+    }
+    if object_prior_enabled:
+        object_prior_masks, object_prior_report = yolo_object_prior_masks(
+            source,
+            source_alpha_mask,
+            object_prior_min_area,
+            object_prior_min_area_pct,
+            device,
+            object_prior_confidence,
+            object_prior_max_regions,
+            object_prior_image_size,
+            skip_people=person_prior_enabled,
+        )
+        raw_masks.extend(object_prior_masks)
+        debug_event(
+            "object-decomposition-object-prior",
+            {
+                "requestId": request_id,
+                "report": object_prior_report,
+            },
+        )
 
-            raw_masks.append(
-                {
-                    "mask": mask,
-                    "area": raw_area,
-                    "rawArea": raw_area,
-                    "bounds": raw_bounds,
-                    "rawBounds": raw_bounds,
-                    "score": score,
-                    "utility": object_mask_utility(
-                        raw_area, raw_bounds, source.width, source.height, score
-                    ),
-                    "pointIndex": point_index,
-                    "optionIndex": option_index,
-                }
+    sam_grid_report: dict[str, Any] = {
+        "enabled": sam_grid_fallback_enabled,
+        "status": "disabled" if not sam_grid_fallback_enabled else "pending",
+        "gridSize": grid_size,
+    }
+    should_run_sam_grid = sam_grid_fallback_enabled or (
+        not raw_masks and not (person_prior_enabled or object_prior_enabled)
+    )
+    if should_run_sam_grid:
+        point_batch: list[list[list[int]]] = []
+        for gy in range(grid_size):
+            y = round((gy + 0.5) * source.height / grid_size)
+            for gx in range(grid_size):
+                x = round((gx + 0.5) * source.width / grid_size)
+                point_batch.append([[int(x), int(y)]])
+
+        sam_grid_batch_size = max(
+            1,
+            min(
+                int(
+                    parameters.get(
+                        "samGridBatchSize",
+                        24 if segmentation_backend == "sam-hq" else 48,
+                    )
+                ),
+                64,
+            ),
+        )
+        sam_grid_report["batchSize"] = sam_grid_batch_size
+        grid_raw_mask_count = 0
+        processed_point_count = 0
+        try:
+            release_cuda_memory()
+            processor, model = load_segmentation_model(segmentation, device)
+            model.eval()
+            point_offset = 0
+            active_batch_size = sam_grid_batch_size
+            oom_retries = 0
+            while point_offset < len(point_batch):
+                point_chunk = point_batch[point_offset:point_offset + active_batch_size]
+                try:
+                    inputs = processor(
+                        rgb,
+                        input_points=[point_chunk],
+                        return_tensors="pt",
+                    )
+                    inputs = {key: value.to(device) for key, value in inputs.items()}
+                    with torch.no_grad():
+                        outputs = model(**inputs)
+                    processed_masks = processor.image_processor.post_process_masks(
+                        outputs.pred_masks.cpu(),
+                        inputs["original_sizes"].cpu(),
+                        inputs["reshaped_input_sizes"].cpu(),
+                    )[0]
+                    iou_scores = outputs.iou_scores.detach().cpu()[0]
+                except RuntimeError as exc:
+                    if "out of memory" in str(exc).lower() and active_batch_size > 1:
+                        oom_retries += 1
+                        active_batch_size = max(1, active_batch_size // 2)
+                        sam_grid_report["oomRetries"] = oom_retries
+                        sam_grid_report["batchSize"] = active_batch_size
+                        release_cuda_memory()
+                        continue
+                    raise
+
+                for local_point_index in range(processed_masks.shape[0]):
+                    point_index = point_offset + local_point_index
+                    for option_index in range(processed_masks.shape[1]):
+                        score = float(iou_scores[local_point_index][option_index].item())
+                        mask = (
+                            processed_masks[local_point_index][option_index]
+                            .numpy()
+                            .astype(bool)
+                        )
+                        raw_area = int(np.count_nonzero(mask))
+                        if raw_area < min_area:
+                            rejection_counts["rawTooSmall"] += 1
+                            continue
+                        raw_bounds = mask_bounds(mask)
+                        if raw_bounds is None:
+                            rejection_counts["rawEmpty"] += 1
+                            continue
+                        if is_background_like_mask(
+                            mask, raw_bounds, source.width, source.height
+                        ):
+                            rejection_counts["rawBackgroundLike"] += 1
+                            continue
+                        if is_sparse_sprawling_mask(
+                            mask, raw_bounds, source.width, source.height
+                        ):
+                            rejection_counts["rawSparseSprawl"] += 1
+                            continue
+
+                        raw_masks.append(
+                            {
+                                "mask": mask,
+                                "area": raw_area,
+                                "rawArea": raw_area,
+                                "bounds": raw_bounds,
+                                "rawBounds": raw_bounds,
+                                "score": score,
+                                "utility": object_mask_utility(
+                                    raw_area,
+                                    raw_bounds,
+                                    source.width,
+                                    source.height,
+                                    score,
+                                    "sam-grid",
+                                ),
+                                "pointIndex": point_index,
+                                "optionIndex": option_index,
+                                "prior": "sam-grid",
+                            }
+                        )
+                        grid_raw_mask_count += 1
+                processed_point_count += len(point_chunk)
+                point_offset += len(point_chunk)
+                del inputs, outputs, processed_masks, iou_scores
+                release_cuda_memory()
+            sam_grid_report["status"] = "applied"
+            sam_grid_report["pointCount"] = len(point_batch)
+        except Exception as exc:  # noqa: BLE001
+            sam_grid_report["status"] = (
+                "partial-failed" if processed_point_count else "failed"
             )
+            sam_grid_report["message"] = str(exc)
+            if not raw_masks:
+                return fail(
+                    response_path,
+                    request_id,
+                    f"{segmentation_backend} object decomposition failed with "
+                    f"{segmentation_model}: {exc}",
+                    2,
+                )
+        finally:
+            try:
+                if "model" in locals():
+                    try:
+                        model.to("cpu")
+                    except Exception:
+                        pass
+                    del model
+                if "processor" in locals():
+                    del processor
+            except Exception:
+                pass
+            release_cuda_memory()
+        sam_grid_report["processedPointCount"] = processed_point_count
+        sam_grid_report["rawMaskCount"] = grid_raw_mask_count
 
     raw_masks.sort(key=lambda item: (item["utility"], item["score"], item["area"]), reverse=True)
+    preselection_raw_mask_count = len(raw_masks)
+    raw_mask_preselection_limit = max(max_masks, 96)
+    if len(raw_masks) > raw_mask_preselection_limit:
+        raw_masks = raw_masks[:raw_mask_preselection_limit]
     selected_masks: list[dict[str, Any]] = []
     selected_union = np.zeros(source_alpha_mask.shape, dtype=bool)
     for candidate in raw_masks:
         raw_area = candidate["rawArea"]
+        candidate_min_area = int(candidate.get("minAreaOverride", min_area))
         min_component_area = max(96, int(total_pixels * 0.0004), int(raw_area * 0.006))
         mask = clean_object_mask(candidate["mask"], source_alpha_mask, min_component_area)
         area = int(np.count_nonzero(mask))
-        if area < min_area:
+        if area < candidate_min_area:
+            rejection_counts["cleanedTooSmall"] += 1
             continue
         bounds = mask_bounds(mask)
         if bounds is None:
+            rejection_counts["cleanedEmpty"] += 1
             continue
         if is_background_like_mask(mask, bounds, source.width, source.height):
+            rejection_counts["cleanedBackgroundLike"] += 1
+            continue
+        if is_sparse_sprawling_mask(mask, bounds, source.width, source.height):
+            rejection_counts["cleanedSparseSprawl"] += 1
             continue
         overlap_with_selected = float(np.logical_and(mask, selected_union).sum()) / float(area)
-        if overlap_with_selected >= 0.65:
+        # Decomposition should favor independently movable pieces. Broad later
+        # masks that mostly cover already-selected objects create muddy
+        # duplicate layers and confuse the repaired base plate.
+        if overlap_with_selected >= 0.45:
+            rejection_counts["overlapRejected"] += 1
             continue
         candidate = {
             **candidate,
@@ -1139,7 +2157,12 @@ def write_object_decomposition_response(
             "area": area,
             "bounds": bounds,
             "utility": object_mask_utility(
-                area, bounds, source.width, source.height, candidate["score"]
+                area,
+                bounds,
+                source.width,
+                source.height,
+                candidate["score"],
+                str(candidate.get("prior", "")),
             ),
             "overlapWithSelected": overlap_with_selected,
             "minComponentArea": min_component_area,
@@ -1147,6 +2170,15 @@ def write_object_decomposition_response(
         duplicate = False
         for selected in selected_masks:
             if mask_iou(candidate["mask"], selected["mask"]) >= 0.82:
+                rejection_counts["duplicateRejected"] += 1
+                duplicate = True
+                break
+            if (
+                str(candidate.get("prior", "")).startswith("person-yolo")
+                and str(selected.get("prior", "")).startswith("person-yolo")
+                and mask_overlap_of_smaller(candidate["mask"], selected["mask"]) >= 0.22
+            ):
+                rejection_counts["personPriorDuplicateRejected"] += 1
                 duplicate = True
                 break
         if duplicate:
@@ -1163,8 +2195,21 @@ def write_object_decomposition_response(
         union_mask = np.zeros(source_alpha_mask.shape, dtype=bool)
         for item in selected_masks:
             union_mask = np.logical_or(union_mask, item["mask"])
-        base_overlap_px = max(2, min(6, int(math.ceil(min(source.width, source.height) / 384.0))))
-        base_cutout_mask = erode_boolean_mask(union_mask, base_overlap_px)
+        base_overlap_px = max(
+            0,
+            min(
+                int(parameters.get("baseRemainderOverlapPx", 0)),
+                32,
+            ),
+        )
+        # Keep the visible base plate tight by default. Expanding this hole
+        # creates a transparent moat around every extracted object once the
+        # source layer is hidden. Repair masks expand separately in the editor.
+        base_cutout_mask = (
+            dilate_boolean_mask(union_mask, base_overlap_px)
+            if base_overlap_px > 0
+            else union_mask
+        )
         remainder_mask = np.logical_and(source_alpha_mask, ~base_cutout_mask)
         remainder_area = int(np.count_nonzero(remainder_mask))
         if remainder_area > 0:
@@ -1185,7 +2230,12 @@ def write_object_decomposition_response(
                     "metadata": {
                         "operation": "object-decomposition",
                         "modelRole": "object-decomposition",
-                        "model": model_id,
+                        "model": segmentation_model,
+                        "modelId": segmentation["modelId"],
+                        "backend": segmentation_backend,
+                        "segmentationBackend": segmentation_backend,
+                        "segmentationModel": segmentation_model,
+                        "regionSchema": "underpaint.segmentation-region.v1",
                         "regionSetId": region_set_id,
                         "regionSetLabel": region_set_label,
                         "groupId": "base-remainder",
@@ -1198,8 +2248,10 @@ def write_object_decomposition_response(
                         "maskRole": "base-remainder",
                         "baseOverlapPx": base_overlap_px,
                         "areaPixels": remainder_area,
+                        "areaPx": remainder_area,
                         "areaRatio": remainder_area / total_pixels,
                         "bounds": list(mask_bounds(remainder_mask) or (0, 0, 0, 0)),
+                        "bbox": list(mask_bounds(remainder_mask) or (0, 0, 0, 0)),
                         "labelStatus": "manual",
                         "helperStatus": "not-needed",
                     },
@@ -1207,13 +2259,20 @@ def write_object_decomposition_response(
             )
     for index, item in enumerate(selected_masks):
         mask = item["mask"]
-        edge_feather = max(0.75, min(2.5, min(source.width, source.height) / 512.0))
+        edge_feather = max(0.25, min(1.0, min(source.width, source.height) / 1536.0))
         mask_image = soft_object_mask(mask, edge_feather)
         layer = source_with_alpha(source, mask_image)
         candidate_id = f"object-{index + 1}"
-        label = f"Object {index + 1}"
+        raw_label = str(item.get("semanticName") or "").strip()
+        label = (
+            f"{raw_label.title()} {index + 1}"
+            if raw_label
+            else f"Object {index + 1}"
+        )
         area_ratio = item["area"] / total_pixels
-        group_id, group_label = object_region_group(area_ratio)
+        default_group_id, default_group_label = object_region_group(area_ratio)
+        group_id = str(item.get("groupId") or default_group_id)
+        group_label = str(item.get("groupLabel") or default_group_label)
         image_path = job_dir / f"{candidate_id}.png"
         mask_path = job_dir / f"{candidate_id}-mask.png"
         layer.save(image_path)
@@ -1237,7 +2296,12 @@ def write_object_decomposition_response(
                 "metadata": {
                     "operation": "object-decomposition",
                     "modelRole": "object-decomposition",
-                    "model": model_id,
+                    "model": segmentation_model,
+                    "modelId": segmentation["modelId"],
+                    "backend": segmentation_backend,
+                    "segmentationBackend": segmentation_backend,
+                    "segmentationModel": segmentation_model,
+                    "regionSchema": "underpaint.segmentation-region.v1",
                     "regionSetId": region_set_id,
                     "regionSetLabel": region_set_label,
                     "groupId": group_id,
@@ -1249,14 +2313,22 @@ def write_object_decomposition_response(
                     "decompositionDepth": decomposition_depth,
                     "maskRole": "extracted-object",
                     "samPredictedIou": item["score"],
+                    "predictedIou": item["score"],
+                    "maskPrior": item.get("prior", "sam-grid"),
+                    "className": item.get("className", ""),
+                    "boxPrompt": item.get("boxPrompt", []),
+                    "detectorModel": item.get("detectorModel", ""),
+                    "mergedDetectionCount": item.get("mergedDetectionCount", 1),
                     "maskUtility": item["utility"],
                     "samPointIndex": item["pointIndex"],
                     "samOptionIndex": item["optionIndex"],
                     "overlapWithSelected": item["overlapWithSelected"],
                     "areaPixels": item["area"],
+                    "areaPx": item["area"],
                     "rawAreaPixels": item["rawArea"],
                     "areaRatio": area_ratio,
                     "bounds": list(item["bounds"]),
+                    "bbox": list(item["bounds"]),
                     "rawBounds": list(item["rawBounds"]),
                     "edgeFeatherPx": edge_feather,
                     "minComponentAreaPixels": item["minComponentArea"],
@@ -1273,8 +2345,11 @@ def write_object_decomposition_response(
             "requestId": request_id,
             "candidateCount": len(candidates),
             "rawMaskCount": len(raw_masks),
+            "preselectionRawMaskCount": preselection_raw_mask_count,
+            "rejectionCounts": rejection_counts,
             "elapsedMsec": elapsed_ms,
-            "model": model_id,
+            "model": segmentation_model,
+            "backend": segmentation_backend,
         },
     )
     write_json(
@@ -1291,17 +2366,29 @@ def write_object_decomposition_response(
                 "requestedRegionCount": requested_mask_count,
                 "regionCount": len(candidates),
                 "rawMaskCount": len(raw_masks),
+                "preselectionRawMaskCount": preselection_raw_mask_count,
+                "rawMaskPreselectionLimit": raw_mask_preselection_limit,
+                "rejectedMaskCount": sum(rejection_counts.values()),
+                "rejectionCounts": rejection_counts,
+                "personPrior": person_prior_report,
+                "objectPrior": object_prior_report,
+                "samGridFallback": sam_grid_report,
                 "decompositionDepth": decomposition_depth,
                 "regionSetId": region_set_id,
                 "regionSetLabel": region_set_label,
-                "model": model_id,
+                "model": segmentation_model,
+                "modelId": segmentation["modelId"],
+                "backend": segmentation_backend,
+                "segmentationBackend": segmentation_backend,
                 "gridSize": grid_size,
                 **debug_diagnostics(),
             },
             provenance={
                 "backend": "python-worker",
                 "schema": SCHEMA,
-                "model": model_id,
+                "model": segmentation_model,
+                "modelId": segmentation["modelId"],
+                "segmentationBackend": segmentation_backend,
             },
         ),
     )
@@ -1897,13 +2984,76 @@ def detail_render_size(
     )
 
 
+DETAIL_EXPECTED_CLASSES = {
+    "face": {"face"},
+    "body": {"person"},
+    "hands": {"hand", "hands"},
+}
+
+
+def detail_detector_class_name(detector: dict[str, Any], class_id: Any) -> str:
+    try:
+        names = getattr(detector["model"], "names", {})
+        name = names.get(int(class_id), "") if isinstance(names, dict) else ""
+        return str(name).strip().lower()
+    except Exception:
+        return ""
+
+
+def detail_detection_rejection_reason(
+    region: str,
+    class_name: str,
+    box: list[float],
+    image_size: tuple[int, int],
+) -> str | None:
+    expected_classes = DETAIL_EXPECTED_CLASSES.get(region, set())
+    if expected_classes and class_name and class_name not in expected_classes:
+        return f"class:{class_name or 'unknown'}"
+
+    left, top, right, bottom = box
+    width = max(0.0, right - left)
+    height = max(0.0, bottom - top)
+    image_width, image_height = image_size
+    image_area = max(1.0, float(image_width * image_height))
+    area_ratio = (width * height) / image_area
+    shortest_image_edge = max(1.0, float(min(image_width, image_height)))
+    min_side = max(8.0, shortest_image_edge * 0.012)
+    if width < min_side or height < min_side:
+        return "too-small"
+
+    aspect = width / height if height else 0.0
+    if region == "face":
+        if aspect < 0.35 or aspect > 2.25:
+            return "face-aspect"
+        if area_ratio < 0.00025:
+            return "face-too-small"
+        if area_ratio > 0.75:
+            return "face-too-large"
+    elif region == "body":
+        if aspect < 0.15 or aspect > 3.25:
+            return "body-aspect"
+        if area_ratio < 0.0005:
+            return "body-too-small"
+    elif region == "hands":
+        if aspect < 0.25 or aspect > 4.0:
+            return "hand-aspect"
+        if area_ratio < 0.00012:
+            return "hand-too-small"
+        if area_ratio > 0.25:
+            return "hand-too-large"
+    return None
+
+
 def detected_detail_regions(
     detectors: list[dict[str, Any]],
     image: Image.Image,
     detail_pass: dict[str, Any],
     worker_device: str,
-) -> tuple[list[dict[str, Any]], int]:
+) -> tuple[list[dict[str, Any]], int, int, dict[str, int], list[dict[str, Any]]]:
     regions: list[dict[str, Any]] = []
+    raw_detection_count = 0
+    rejection_counts: dict[str, int] = {}
+    rejected_samples: list[dict[str, Any]] = []
     predict_device = detail_predict_device(worker_device)
     for detector in detectors:
         results = detector["model"].predict(
@@ -1918,20 +3068,54 @@ def detected_detail_regions(
                 continue
             xyxy = boxes.xyxy.detach().cpu().tolist()
             confidences = boxes.conf.detach().cpu().tolist()
-            for box, confidence in zip(xyxy, confidences):
+            classes = (
+                boxes.cls.detach().cpu().tolist()
+                if getattr(boxes, "cls", None) is not None
+                else [None] * len(xyxy)
+            )
+            for box, confidence, class_id in zip(xyxy, confidences, classes):
+                raw_detection_count += 1
+                box = [float(value) for value in box]
+                class_name = detail_detector_class_name(detector, class_id)
+                rejection_reason = detail_detection_rejection_reason(
+                    detector["region"], class_name, box, image.size
+                )
+                if rejection_reason:
+                    rejection_counts[rejection_reason] = (
+                        rejection_counts.get(rejection_reason, 0) + 1
+                    )
+                    if len(rejected_samples) < 12:
+                        rejected_samples.append(
+                            {
+                                "region": detector["region"],
+                                "className": class_name,
+                                "confidence": float(confidence),
+                                "box": [round(float(value), 2) for value in box],
+                                "reason": rejection_reason,
+                            }
+                        )
+                    continue
                 mask = mask_for_box(image.size, tuple(box), detail_pass["maskPaddingPx"])
                 if mask.getbbox() is None:
+                    rejection_counts["empty-mask"] = rejection_counts.get("empty-mask", 0) + 1
                     continue
                 regions.append(
                     {
                         "region": detector["region"],
+                        "className": class_name,
                         "confidence": float(confidence),
                         "box": [round(float(value), 2) for value in box],
                         "mask": mask,
                     }
                 )
     regions.sort(key=lambda region: region["confidence"], reverse=True)
-    return regions[: detail_pass["maxRegions"]], len(regions)
+    return (
+        regions[: detail_pass["maxRegions"]],
+        len(regions),
+        raw_detection_count,
+        rejection_counts,
+        rejected_samples,
+    )
 
 
 def run_detail_pass(
@@ -1950,6 +3134,9 @@ def run_detail_pass(
     device: str,
     job_dir: Path,
     candidate_index: int,
+    precomputed_detection: tuple[
+        list[dict[str, Any]], int, int, dict[str, int], list[dict[str, Any]]
+    ] | None = None,
 ) -> tuple[Image.Image, dict[str, Any]]:
     if detail_report.get("status") != "ready" or not detectors:
         debug_event(
@@ -1985,10 +3172,23 @@ def run_detail_pass(
             "candidate": candidate_index,
         }
     )
-    regions, total_detected_regions = detected_detail_regions(
-        detectors, image, detail_pass, device
-    )
+    if precomputed_detection is None:
+        precomputed_detection = detected_detail_regions(
+            detectors, image, detail_pass, device
+        )
+    (
+        regions,
+        total_detected_regions,
+        raw_detected_regions,
+        rejection_counts,
+        rejected_samples,
+    ) = precomputed_detection
     report["detectedRegions"] = total_detected_regions
+    report["rawDetectedRegions"] = raw_detected_regions
+    report["rejectedDetections"] = sum(rejection_counts.values())
+    report["rejectionCounts"] = rejection_counts
+    if rejected_samples:
+        report["rejectedDetectionSamples"] = rejected_samples
     report["selectedRegions"] = len(regions)
     report["maxRegions"] = detail_pass["maxRegions"]
     report["truncatedRegions"] = max(0, total_detected_regions - len(regions))
@@ -2009,6 +3209,9 @@ def run_detail_pass(
             {
                 "candidate": candidate_index,
                 "fallbackToEditMask": False,
+                "rawDetectedRegions": raw_detected_regions,
+                "rejectedDetections": sum(rejection_counts.values()),
+                "rejectionCounts": rejection_counts,
             },
         )
         emit_progress(
@@ -2017,6 +3220,19 @@ def run_detail_pass(
                 "status": "no-detections",
                 "candidate": candidate_index,
             }
+        )
+        return image, report
+
+    if pipe is None:
+        report["status"] = "pipeline-unavailable"
+        report["message"] = "Detail regions were detected, but no inpaint pipeline is loaded."
+        debug_event(
+            "detail-pass-pipeline-unavailable",
+            {
+                "candidate": candidate_index,
+                "detectedRegions": total_detected_regions,
+                "selectedRegions": len(regions),
+            },
         )
         return image, report
 
@@ -2444,8 +3660,163 @@ def stretched_edge_slice_field(source: Image.Image, alpha: Image.Image, mask: Im
     return fill
 
 
+def mask_component_bounds(mask: Image.Image) -> list[tuple[int, int, int, int]]:
+    import numpy as np
+
+    pixels = np.array(mask.convert("L")) > 8
+    height, width = pixels.shape
+    visited = np.zeros(pixels.shape, dtype=bool)
+    bounds: list[tuple[int, int, int, int]] = []
+    ys, xs = np.where(pixels)
+    for start_y, start_x in zip(ys, xs):
+        if visited[start_y, start_x]:
+            continue
+        stack = [(int(start_x), int(start_y))]
+        visited[start_y, start_x] = True
+        left = right = int(start_x)
+        top = bottom = int(start_y)
+        while stack:
+            x, y = stack.pop()
+            left = min(left, x)
+            right = max(right, x)
+            top = min(top, y)
+            bottom = max(bottom, y)
+            for next_x, next_y in (
+                (x - 1, y),
+                (x + 1, y),
+                (x, y - 1),
+                (x, y + 1),
+            ):
+                if (
+                    0 <= next_x < width
+                    and 0 <= next_y < height
+                    and pixels[next_y, next_x]
+                    and not visited[next_y, next_x]
+                ):
+                    visited[next_y, next_x] = True
+                    stack.append((next_x, next_y))
+        bounds.append((left, top, right + 1, bottom + 1))
+    return bounds
+
+
+def stretched_mask_component_field(source: Image.Image, mask: Image.Image) -> Image.Image:
+    """Prefill internal object holes from the nearest 25% edge slices."""
+    source_rgb = source.convert("RGB")
+    width, height = source_rgb.size
+    mask = mask.convert("L").point(lambda pixel: 255 if pixel > 8 else 0)
+    fill = source_rgb.copy()
+    for left, top, right, bottom in mask_component_bounds(mask):
+        hole_width = right - left
+        hole_height = bottom - top
+        if hole_width <= 0 or hole_height <= 0:
+            continue
+        component_mask = mask.crop((left, top, right, bottom))
+        slice_width = max(1, min(max(8, hole_width // 4), width))
+        slice_height = max(1, min(max(8, hole_height // 4), height))
+        filled_component = False
+
+        if left > 0:
+            strip_left = max(0, left - min(slice_width, left))
+            strip = source_rgb.crop((strip_left, top, left, bottom))
+            if strip.width > 0 and strip.height > 0:
+                patch = strip.resize((hole_width, hole_height), Image.Resampling.BICUBIC)
+                paste_masked(fill, patch, (left, top), component_mask)
+                filled_component = True
+
+        if right < width:
+            strip_right = min(width, right + min(slice_width, width - right))
+            strip = source_rgb.crop((right, top, strip_right, bottom))
+            if strip.width > 0 and strip.height > 0:
+                patch = strip.resize((hole_width, hole_height), Image.Resampling.BICUBIC)
+                paste_masked(fill, patch, (left, top), component_mask)
+                filled_component = True
+
+        if top > 0:
+            strip_top = max(0, top - min(slice_height, top))
+            strip = source_rgb.crop((left, strip_top, right, top))
+            if strip.width > 0 and strip.height > 0:
+                patch = strip.resize((hole_width, hole_height), Image.Resampling.BICUBIC)
+                paste_masked(fill, patch, (left, top), component_mask)
+                filled_component = True
+
+        if bottom < height:
+            strip_bottom = min(height, bottom + min(slice_height, height - bottom))
+            strip = source_rgb.crop((left, bottom, right, strip_bottom))
+            if strip.width > 0 and strip.height > 0:
+                patch = strip.resize((hole_width, hole_height), Image.Resampling.BICUBIC)
+                paste_masked(fill, patch, (left, top), component_mask)
+                filled_component = True
+
+        if not filled_component:
+            blurred = source_rgb.filter(ImageFilter.GaussianBlur(radius=32))
+            fill.paste(blurred.crop((left, top, right, bottom)), (left, top), component_mask)
+    return fill
+
+
+def blurred_visible_context_field(
+    source: Image.Image, mask: Image.Image, radius: int = 56
+) -> Image.Image:
+    """Prefill object-removal holes from blurred visible pixels.
+
+    Internal object removal is not the same as outpainting. Stretching edge
+    strips across a large person-shaped hole creates strong bands that the
+    diffusion model then tries to preserve. A normalized alpha blur gives the
+    model a softer color/light primer while still asking it to rebuild content
+    inside the explicit mask.
+    """
+
+    import numpy as np
+
+    rgba = source.convert("RGBA")
+    source_rgb = rgba.convert("RGB")
+    alpha = rgba.getchannel("A")
+    binary_mask = mask.convert("L").point(lambda pixel: 255 if pixel > 8 else 0)
+    if binary_mask.getbbox() is None:
+        return source_rgb
+
+    rgb_array = np.asarray(source_rgb, dtype=np.float32)
+    alpha_array = np.asarray(alpha, dtype=np.float32) / 255.0
+    visible = alpha_array > 0.03
+    if not visible.any():
+        return source_rgb
+    average_visible_rgb = rgb_array[visible].mean(axis=0)
+
+    premultiplied = np.clip(rgb_array * alpha_array[..., None], 0, 255).astype(
+        np.uint8
+    )
+    blurred_rgb = np.asarray(
+        Image.fromarray(premultiplied, "RGB").filter(
+            ImageFilter.GaussianBlur(radius=radius)
+        ),
+        dtype=np.float32,
+    )
+    blurred_alpha = np.asarray(
+        Image.fromarray(np.clip(alpha_array * 255, 0, 255).astype(np.uint8), "L").filter(
+            ImageFilter.GaussianBlur(radius=radius)
+        ),
+        dtype=np.float32,
+    ) / 255.0
+    normalized = blurred_rgb / np.maximum(blurred_alpha[..., None], 0.015)
+    normalized = np.clip(normalized, 0, 255)
+    low_support = blurred_alpha < 0.015
+    if low_support.any():
+        normalized[low_support] = average_visible_rgb
+
+    result = rgb_array.copy()
+    mask_array = np.asarray(binary_mask, dtype=np.uint8) > 8
+    result[mask_array] = normalized[mask_array]
+    filled = Image.fromarray(np.clip(result, 0, 255).astype(np.uint8), "RGB")
+    soft_mask = binary_mask.filter(ImageFilter.GaussianBlur(radius=12))
+    softened = filled.filter(ImageFilter.GaussianBlur(radius=6))
+    filled.paste(softened, (0, 0), soft_mask)
+    return filled
+
+
 def prefill_outpaint_source(
-    source: Image.Image, mask: Image.Image, prefill_noise: float = 0.42
+    source: Image.Image,
+    mask: Image.Image,
+    prefill_noise: float = 0.42,
+    prefill_style: str = "",
 ) -> Image.Image:
     """Give outpaint models a plausible continuation under the editable mask."""
     source_rgb = source.convert("RGB")
@@ -2454,6 +3825,14 @@ def prefill_outpaint_source(
     bbox = mask.getbbox()
     if bbox is None:
         return source_rgb
+    if prefill_style.lower() == "object-context-plate" and source_alpha is not None:
+        fill = blurred_visible_context_field(source, mask)
+        if prefill_noise > 0.0:
+            noise = Image.effect_noise(source_rgb.size, 96).convert("L")
+            noise_rgb = Image.merge("RGB", (noise, noise, noise))
+            noisy_fill = Image.blend(fill, noise_rgb, max(0.0, min(prefill_noise, 0.85)))
+            fill.paste(noisy_fill, (0, 0), mask)
+        return fill
 
     width, height = source_rgb.size
     left, top, right, bottom = bbox
@@ -2504,6 +3883,10 @@ def prefill_outpaint_source(
             (0, top),
             mask.crop((0, top, width, height)),
         )
+        did_edge_fill = True
+
+    if not did_edge_fill and source_alpha is not None:
+        fill = stretched_mask_component_field(source, mask)
         did_edge_fill = True
 
     if not did_edge_fill and source_alpha is None:
@@ -2607,26 +3990,36 @@ def main(argv: list[str]) -> int:
         output_size = source.size
         mask = load_mask(mask_path, source.size)
         output_mask = mask.copy()
-        if operation == "outpaint":
+        parameters = request.get("parameters", {})
+        prefill_style = str(parameters.get("prefillStyle", "")).lower()
+        should_prefill = operation == "outpaint" or prefill_style in {
+            "edge-slices-25",
+            "context-plate",
+            "object-context-plate",
+        }
+        if should_prefill:
             prefill_style = str(
-                request.get("parameters", {}).get("prefillStyle", "edge-slices-25")
+                parameters.get("prefillStyle", "edge-slices-25")
             )
             prefill_noise = float(
-                request.get("parameters", {}).get("prefillNoise", 0.42)
+                parameters.get("prefillNoise", 0.42 if operation == "outpaint" else 0.0)
             )
             debug_event(
-                "outpaint-prefill",
+                "masked-prefill",
                 {
+                    "operation": operation,
                     "style": prefill_style,
                     "prefillNoise": prefill_noise,
                     "hasSourceAlpha": "A" in source_rgba.getbands(),
                 },
             )
-            source = prefill_outpaint_source(source_rgba, mask, prefill_noise)
+            source = prefill_outpaint_source(
+                source_rgba, mask, prefill_noise, prefill_style
+            )
             if DEBUG_ENABLED:
                 prefill_path = job_dir / "prefill-source.png"
                 source.save(prefill_path)
-                debug_event("outpaint-prefill-saved", {"path": str(prefill_path)})
+                debug_event("masked-prefill-saved", {"path": str(prefill_path)})
         preferences = request.get("preferences", {})
         requested_render_edge = int(
             preferences.get("targetRenderEdge")
@@ -2943,112 +4336,160 @@ def main(argv: list[str]) -> int:
                 }
             )
 
-        if refiner["enabled"] and refiner["backend"] == "diffusers":
-            unload_pipeline(pipe, torch, "base-inpaint")
-            pipe = None
-            debug_event(
-                "refiner-load-start",
-                {"model": refiner["model"], "loadKwargs": load_kwargs},
-            )
-            refiner_pipe = load_pipeline(
-                StableDiffusionXLImg2ImgPipeline, refiner["model"], load_kwargs
-            )
-            refiner_scheduler_config = refiner_pipe.scheduler.config
-            refiner_scheduler_key, refiner_scheduler_class = apply_scheduler(
-                refiner_pipe,
-                refiner["scheduler"],
-                *scheduler_classes,
-                scheduler_config=refiner_scheduler_config,
-            )
-            prepare_pipeline_for_device(
-                refiner_pipe,
-                device,
-                preferences,
-                "refiner",
-                prefer_cpu_offload=True,
-            )
-            if preferences.get("vaeTiling", True):
-                if hasattr(refiner_pipe, "vae") and hasattr(
-                    refiner_pipe.vae, "enable_tiling"
-                ):
-                    refiner_pipe.vae.enable_tiling()
-                elif hasattr(refiner_pipe, "enable_vae_tiling"):
-                    refiner_pipe.enable_vae_tiling()
-            if hasattr(refiner_pipe, "vae") and hasattr(
-                refiner_pipe.vae, "enable_slicing"
-            ):
-                refiner_pipe.vae.enable_slicing()
-            elif hasattr(refiner_pipe, "enable_vae_slicing"):
-                refiner_pipe.enable_vae_slicing()
-            debug_event(
-                "refiner-load-complete",
-                {
-                    "model": refiner["model"],
-                    "pipelineClass": refiner_pipe.__class__.__name__,
-                    "scheduler": refiner_scheduler_key,
-                    "schedulerClass": refiner_scheduler_class,
-                },
-            )
-            for candidate in base_candidates:
-                candidate["image"] = run_refiner_pass(
+        def apply_refiner_stage(stage_label: str) -> None:
+            nonlocal pipe, refiner_report
+            if not refiner["enabled"]:
+                return
+            if refiner["backend"] == "diffusers":
+                unload_pipeline(pipe, torch, stage_label)
+                pipe = None
+                debug_event(
+                    "refiner-load-start",
+                    {
+                        "model": refiner["model"],
+                        "loadKwargs": load_kwargs,
+                        "placement": refiner["placement"],
+                    },
+                )
+                refiner_pipe = load_pipeline(
+                    StableDiffusionXLImg2ImgPipeline, refiner["model"], load_kwargs
+                )
+                refiner_scheduler_config = refiner_pipe.scheduler.config
+                refiner_scheduler_key, refiner_scheduler_class = apply_scheduler(
                     refiner_pipe,
-                    torch,
-                    refiner,
-                    candidate["image"],
-                    prompt,
-                    negative_prompt,
-                    cfg,
-                    int(candidate["seed"]),
+                    refiner["scheduler"],
+                    *scheduler_classes,
+                    scheduler_config=refiner_scheduler_config,
+                )
+                prepare_pipeline_for_device(
+                    refiner_pipe,
                     device,
-                    int(candidate["index"]),
+                    preferences,
+                    "refiner",
+                    prefer_cpu_offload=True,
                 )
-                candidate["refiner"] = {
-                    **refiner,
-                    "status": "applied",
-                    "scheduler": refiner_scheduler_key,
-                    "schedulerClass": refiner_scheduler_class,
-                }
-                refiner_report["appliedCandidates"] += 1
-            refiner_report["status"] = "applied"
-            refiner_report["scheduler"] = refiner_scheduler_key
-            refiner_report["schedulerClass"] = refiner_scheduler_class
-            unload_pipeline(refiner_pipe, torch, "refiner")
-            refiner_pipe = None
-        elif refiner["enabled"] and refiner["backend"] == "gguf":
-            unload_pipeline(pipe, torch, "base-inpaint")
-            pipe = None
-            debug_event(
-                "gguf-refiner-start",
-                {
-                    "model": refiner["model"],
-                    "runner": refiner.get("runner", ""),
-                    "candidateCount": len(base_candidates),
-                },
-            )
-            for candidate in base_candidates:
-                candidate["image"] = run_gguf_refiner_pass(
-                    refiner,
-                    candidate["image"],
-                    prompt,
-                    negative_prompt,
-                    cfg,
-                    int(candidate["seed"]),
-                    job_dir,
-                    int(candidate["index"]),
+                if preferences.get("vaeTiling", True):
+                    if hasattr(refiner_pipe, "vae") and hasattr(
+                        refiner_pipe.vae, "enable_tiling"
+                    ):
+                        refiner_pipe.vae.enable_tiling()
+                    elif hasattr(refiner_pipe, "enable_vae_tiling"):
+                        refiner_pipe.enable_vae_tiling()
+                if hasattr(refiner_pipe, "vae") and hasattr(
+                    refiner_pipe.vae, "enable_slicing"
+                ):
+                    refiner_pipe.vae.enable_slicing()
+                elif hasattr(refiner_pipe, "enable_vae_slicing"):
+                    refiner_pipe.enable_vae_slicing()
+                debug_event(
+                    "refiner-load-complete",
+                    {
+                        "model": refiner["model"],
+                        "pipelineClass": refiner_pipe.__class__.__name__,
+                        "scheduler": refiner_scheduler_key,
+                        "schedulerClass": refiner_scheduler_class,
+                        "placement": refiner["placement"],
+                    },
                 )
-                candidate["refiner"] = {
-                    **refiner,
-                    "status": "applied",
-                }
-                refiner_report["appliedCandidates"] += 1
-            refiner_report["status"] = "applied"
-            debug_event(
-                "gguf-refiner-complete",
-                {"appliedCandidates": refiner_report["appliedCandidates"]},
-            )
+                for candidate in base_candidates:
+                    candidate["image"] = run_refiner_pass(
+                        refiner_pipe,
+                        torch,
+                        refiner,
+                        candidate["image"],
+                        prompt,
+                        negative_prompt,
+                        cfg,
+                        int(candidate["seed"]),
+                        device,
+                        int(candidate["index"]),
+                    )
+                    candidate["refiner"] = {
+                        **refiner,
+                        "status": "applied",
+                        "scheduler": refiner_scheduler_key,
+                        "schedulerClass": refiner_scheduler_class,
+                    }
+                    refiner_report["appliedCandidates"] += 1
+                refiner_report["status"] = "applied"
+                refiner_report["scheduler"] = refiner_scheduler_key
+                refiner_report["schedulerClass"] = refiner_scheduler_class
+                unload_pipeline(refiner_pipe, torch, "refiner")
+                return
+            if refiner["backend"] == "gguf":
+                unload_pipeline(pipe, torch, stage_label)
+                pipe = None
+                debug_event(
+                    "gguf-refiner-start",
+                    {
+                        "model": refiner["model"],
+                        "runner": refiner.get("runner", ""),
+                        "candidateCount": len(base_candidates),
+                        "placement": refiner["placement"],
+                    },
+                )
+                for candidate in base_candidates:
+                    candidate["image"] = run_gguf_refiner_pass(
+                        refiner,
+                        candidate["image"],
+                        prompt,
+                        negative_prompt,
+                        cfg,
+                        int(candidate["seed"]),
+                        job_dir,
+                        int(candidate["index"]),
+                    )
+                    candidate["refiner"] = {
+                        **refiner,
+                        "status": "applied",
+                    }
+                    refiner_report["appliedCandidates"] += 1
+                refiner_report["status"] = "applied"
+                debug_event(
+                    "gguf-refiner-complete",
+                    {
+                        "appliedCandidates": refiner_report["appliedCandidates"],
+                        "placement": refiner["placement"],
+                    },
+                )
 
+        if refiner["enabled"] and refiner["placement"] != "after-detail":
+            apply_refiner_stage("base-inpaint")
+
+        detail_precomputed_detections: dict[
+            int,
+            tuple[
+                list[dict[str, Any]],
+                int,
+                int,
+                dict[str, int],
+                list[dict[str, Any]],
+            ],
+        ] = {}
+        detail_has_regions = False
         if detail_pass.get("enabled"):
-            if pipe is None:
+            detail_detectors, detail_pass_report = load_detail_detectors(detail_pass)
+            if detail_pass_report.get("status") == "ready" and detail_detectors:
+                for candidate in base_candidates:
+                    candidate_index = int(candidate["index"])
+                    detection = detected_detail_regions(
+                        detail_detectors, candidate["image"], detail_pass, device
+                    )
+                    detail_precomputed_detections[candidate_index] = detection
+                    if detection[0]:
+                        detail_has_regions = True
+                if not detail_has_regions:
+                    debug_event(
+                        "detail-pass-no-candidate-detections",
+                        {
+                            "candidateCount": len(base_candidates),
+                            "detectors": [
+                                {"region": detector["region"], "path": detector["path"]}
+                                for detector in detail_detectors
+                            ],
+                        },
+                    )
+            if detail_has_regions and pipe is None:
                 debug_event(
                     "detail-inpaint-reload-start",
                     {"model": model_id, "loadKwargs": load_kwargs},
@@ -3069,7 +4510,6 @@ def main(argv: list[str]) -> int:
                     "detail-inpaint-reload-complete",
                     {"model": model_id, "pipelineClass": pipe.__class__.__name__},
                 )
-            detail_detectors, detail_pass_report = load_detail_detectors(detail_pass)
         else:
             detail_detectors = []
 
@@ -3095,8 +4535,20 @@ def main(argv: list[str]) -> int:
                     device,
                     job_dir,
                     candidate_index,
+                    detail_precomputed_detections.get(candidate_index),
                 )
             detail_pass_runs.append(candidate_detail_report)
+            candidate["image"] = generated.convert("RGB")
+            candidate["detailPass"] = candidate_detail_report
+
+        if refiner["enabled"] and refiner["placement"] == "after-detail":
+            apply_refiner_stage("detail-inpaint")
+
+        for candidate in base_candidates:
+            candidate_index = int(candidate["index"])
+            seed = int(candidate["seed"])
+            generated = candidate["image"]
+            candidate_detail_report = candidate.get("detailPass", detail_pass_report)
             if generated.size != output_size:
                 generated = generated.resize(output_size, Image.Resampling.LANCZOS)
             generated = apply_alpha_mask(generated, output_mask, edge_feather_px)
@@ -3174,6 +4626,12 @@ def main(argv: list[str]) -> int:
         detail_pass_summary["candidates"] = detail_pass_runs
         detail_pass_summary["detectedRegions"] = sum(
             int(run.get("detectedRegions", 0)) for run in detail_pass_runs
+        )
+        detail_pass_summary["rawDetectedRegions"] = sum(
+            int(run.get("rawDetectedRegions", 0)) for run in detail_pass_runs
+        )
+        detail_pass_summary["rejectedDetections"] = sum(
+            int(run.get("rejectedDetections", 0)) for run in detail_pass_runs
         )
         detail_pass_summary["appliedRegions"] = sum(
             int(run.get("appliedRegions", 0)) for run in detail_pass_runs

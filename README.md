@@ -1,6 +1,6 @@
 # Underpaint
 
-Underpaint is an experimental GPLv3 fork of [Drawpile](https://github.com/drawpile/Drawpile) building a local-first AI photo restoration and image reconstruction workspace.
+Underpaint is an experimental GPLv3 fork of [Drawpile](https://github.com/drawpile/Drawpile) building a local-first AI photo restoration, object removal, and image reconstruction workspace.
 
 The short version: Underpaint treats AI output as art-tool material. Model results should become editable layers, masks, guide maps, regions, candidates, and provenance instead of disappearing behind a prompt box or a cloud service.
 
@@ -20,14 +20,24 @@ Underpaint exists to explore a few connected problems:
 
 The prototype already has the first local AI workflow pieces:
 
-- `AI > Inpaint Selection...` exports the selected region, source context, and mask.
+- `Power Tools > Inpaint Selection...` exports the selected region, source context, and mask.
 - XL-class Diffusers inpainting can run out of process on CUDA through the local worker.
 - Inpaint results import as normal candidate layers that can be previewed, accepted, canceled, or undone.
 - The inpaint dialog exposes prompt, negative prompt, candidates, seed, CFG, denoise, steps, and edge feather.
 - The progress dialog streams worker preview images and uses a determinate progress bar.
-- `AI > Photo Decomposition...` imports placeholder decomposition regions as editable layers, proving the layer-import workflow before SAM-like segmentation is wired in.
-- A local llama.cpp/Qwen prompt helper can rewrite inpaint prompts in place through an icon button.
+- `Power Tools > Object Decomposition...` imports SAM object/part masks as editable grouped layers.
+- Object decomposition can be tested as a no-generation layer extraction pass before attempting base repair.
+- A local llama.cpp/Qwen prompt helper can rewrite inpaint prompts, classify decomposition regions, and group related object parts.
 - Underpaint-owned local model state is being organized under `~/.underpaint/`.
+
+For day-to-day local AI testing, use the one-command launcher:
+
+```bash
+tools/ai/run-underpaint.sh
+```
+
+It starts the prompt helper if needed, waits until it is reachable, sets the
+helper URL and Diffusers worker environment, then launches Underpaint.
 
 ## What Makes This Fork Interesting
 
@@ -37,6 +47,7 @@ Many AI image workflows either hide too much behind a single prompt or expose to
 - **AI output is material.** A background removal produces a cutout and matte. A depth pass produces a visible guide layer. An inpaint produces candidate patch layers. A scene separation pass produces editable regions.
 - **Layers replace nodes.** Internally, operations may use complex model chains. The user should still work with familiar art-tool concepts: selections, masks, layers, regions, prompts, seeds, CFG, denoise, and candidates.
 - **Scene decomposition matters.** Underpaint's "magic layers" idea is not about finding fonts or design assets. It is about separating the image into meaningful visual regions and repairing what sits behind them.
+- **Decomposition should be iterative.** The long-term target is Semantic Peel: identify one meaningful object, cut it into an editable layer, repair the plate behind it, record the decision, and repeat.
 - **Outpaint is intentional.** Expanding a canvas should create space, not automatically invent pixels. Outpaint should be a user-initiated region operation beside inpaint.
 - **Collaboration stays strategic.** Drawpile's collaborative substrate may become useful for shared restoration sessions, cloud rendering workers, agent participants, provenance, and review workflows.
 - **Small, high-quality models are preferred.** The local target is RTX 4070-class hardware, so model choice, tiling, crop size, model swapping, and VRAM scheduling are core design concerns.
@@ -54,6 +65,7 @@ approachable restoration tools
 Planned AI capabilities include:
 
 - scene/layer separation
+- semantic peel object extraction and plate repair
 - inpaint
 - intentional outpaint
 - background removal and matting
@@ -61,6 +73,7 @@ Planned AI capabilities include:
 - depth, normal, pose, edge, and segmentation guide layers
 - face restoration with explicit identity-drift warnings
 - model management and VRAM-aware scheduling
+- document-scoped prompt history and reuse
 - optional cloud rendering/storage providers
 - future MCP/agent control through scoped, undoable domain operations
 
@@ -88,6 +101,8 @@ Underpaint planning docs live in `docs/`:
 - [Project Plan](docs/project-plan.md)
 - [Architecture](docs/architecture.md)
 - [Layer Separation And Inpaint](docs/layer-separation-and-inpaint.md)
+- [Semantic Peel Feature Request](docs/semantic-peel-feature-request.md)
+- [Segmentation Backends Feature Request](docs/segmentation-backends-feature-request.md)
 - [Model Research](docs/model-research.md)
 - [Build Baseline](docs/build-baseline.md)
 - [Rebrand Plan](docs/rebrand-plan.md)
