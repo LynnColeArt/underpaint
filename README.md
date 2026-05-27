@@ -39,6 +39,96 @@ tools/ai/run-underpaint.sh
 It starts the prompt helper if needed, waits until it is reachable, sets the
 helper URL and Diffusers worker environment, then launches Underpaint.
 
+## Linux Developer Install
+
+Underpaint is still a development fork. The currently verified path is a Qt5
+Linux build with local Python AI workers. Windows and macOS support are planned,
+but the AI setup is not packaged yet.
+
+On Ubuntu-like systems, install the native build dependencies:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  build-essential \
+  cmake \
+  ninja-build \
+  pkg-config \
+  git \
+  cargo \
+  python3 \
+  python3-venv \
+  qtbase5-dev \
+  qtbase5-dev-tools \
+  qttools5-dev-tools \
+  libqt5opengl5-dev \
+  libqt5webchannel5-dev \
+  libqt5websockets5-dev \
+  libqt5svg5-dev \
+  libssl-dev \
+  libkf5archive-dev \
+  libzip-dev \
+  libmicrohttpd-dev \
+  libsystemd-dev \
+  libsodium-dev
+```
+
+Clone and build the Qt5 client:
+
+```bash
+git clone https://github.com/LynnColeArt/underpaint.git
+cd underpaint
+
+cmake -S . -B build-qt5-client-baseline -G Ninja \
+  -DCMAKE_BUILD_TYPE=Debug \
+  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+  -DQT_VERSION=5 \
+  -DCLIENT=ON \
+  -DSERVER=OFF \
+  -DSERVERGUI=OFF \
+  -DBUILTINSERVER=OFF \
+  -DTESTS=OFF \
+  -DTOOLS=OFF \
+  -DUPDATE_TRANSLATIONS=OFF \
+  -DUSE_GENERATORS=OFF
+
+cmake --build build-qt5-client-baseline --target drawpile
+```
+
+Set up the Python worker environment:
+
+```bash
+uv venv --python /usr/bin/python3 .venv
+uv pip install --python .venv/bin/python -r tools/ai/requirements-diffusers.txt
+```
+
+If `uv` is not installed, a standard venv also works:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -U pip
+.venv/bin/python -m pip install -r tools/ai/requirements-diffusers.txt
+```
+
+Optional local model helpers can be downloaded into `~/.underpaint/`:
+
+```bash
+tools/ai/download-underpaint-object-detector.sh
+tools/ai/download-underpaint-sam-hq.sh
+tools/ai/download-underpaint-birefnet.sh
+```
+
+Then launch the local AI build:
+
+```bash
+tools/ai/run-underpaint.sh
+```
+
+First launch may download Diffusers model weights into the normal Hugging Face
+cache. The prompt helper also expects a local `llama-server` and compatible
+Qwen model/projector; if those are missing, the launcher will report the missing
+path instead of silently disabling semantic features.
+
 ## What Makes This Fork Interesting
 
 Many AI image workflows either hide too much behind a single prompt or expose too much as technical plumbing. Underpaint is aiming for a different shape:
