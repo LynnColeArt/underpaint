@@ -17,6 +17,7 @@ extern "C" {
 #include <QMap>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QTimer>
 #include <QUrl>
 #include <QVariantMap>
@@ -30,7 +31,10 @@ class ActionBuilder;
 class Document;
 class MainActions;
 class QActionGroup;
+class QDockWidget;
 class QLabel;
+class QLineEdit;
+class QListWidget;
 class QShortcutEvent;
 class QSplitter;
 class QTemporaryFile;
@@ -460,6 +464,12 @@ private:
 	void createDocks();
 	void resetDefaultDocks();
 	void resetDefaultToolbars();
+	void clearPromptHistory();
+	void rememberInpaintPrompt(const QString &prompt);
+	QString takeReusableInpaintPrompt();
+	void setReusableInpaintPrompt(const QString &prompt);
+	void deleteInpaintPromptHistoryEntry(const QString &prompt);
+	void refreshPromptManager();
 	void restoreDefaultStateWith(const QList<QDockWidget *> &dockWidgets);
 	void setupActions();
 	void setupBrushShortcuts();
@@ -547,6 +557,11 @@ private:
 	docks::OnionSkinsDock *m_dockOnionSkins;
 	docks::Timeline *m_dockTimeline;
 	docks::ReferenceDock *m_dockReference;
+	QDockWidget *m_dockPromptManager = nullptr;
+	QLineEdit *m_promptHistorySearch = nullptr;
+	QListWidget *m_promptHistoryList = nullptr;
+	QStringList m_inpaintPromptHistory;
+	QString m_reusableInpaintPrompt;
 	QToolBar *m_toolBarFile;
 	QToolBar *m_toolBarEdit;
 	QToolBar *m_toolBarDraw;

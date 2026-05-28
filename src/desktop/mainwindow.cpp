@@ -118,6 +118,7 @@ extern "C" {
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
+#include <QDockWidget>
 #include <QDoubleSpinBox>
 #include <QEasingCurve>
 #include <QFile>
@@ -1130,6 +1131,7 @@ void MainWindow::createNewWindow(const std::function<void(MainWindow *)> &block)
 
 void MainWindow::loadBlankDocument(const QSize &size, const QColor &background)
 {
+	clearPromptHistory();
 	bool autoRecord = dpAppConfig()->getAutoRecordHost();
 	m_doc->loadBlank(
 		size, background,
@@ -1654,16 +1656,16 @@ void MainWindow::setDefaultDockSizes()
 	resizeDocks(
 		{m_dockToolSettings, m_dockBrushPalette, m_dockColorSpinner,
 		 m_dockColorSliders, m_dockColorPalette, m_dockColorCircle,
-		 m_dockReference, m_dockLayers},
+		 m_dockReference, m_dockPromptManager, m_dockLayers},
 		{leftWidth, leftWidth, rightWidth, rightWidth, rightWidth, rightWidth,
-		 rightWidth, rightWidth},
+		 rightWidth, rightWidth, rightWidth},
 		Qt::Horizontal);
 	resizeDocks(
 		{m_dockToolSettings, m_dockColorSpinner, m_dockColorSliders,
 		 m_dockColorPalette, m_dockColorCircle, m_dockReference, m_dockTimeline,
-		 m_dockOnionSkins},
+		 m_dockOnionSkins, m_dockPromptManager},
 		{leftHeight, rightHeight, rightHeight, rightHeight, rightHeight,
-		 rightHeight, topHeight, topHeight},
+		 rightHeight, topHeight, topHeight, rightHeight},
 		Qt::Vertical);
 }
 // clang-format off
@@ -2601,6 +2603,7 @@ void MainWindow::loadCanvasStateFromFile(
 				showElapsedStatusMessage(
 					//: %1 is minutes, %2 is seconds, %3 is milliseconds.
 					tr("Canvas loaded in %1:%2.%3"), elapsedMsec);
+				clearPromptHistory();
 				bool autoRecord = dpAppConfig()->getAutoRecordHost();
 				if(resume) {
 					long long resumeSessionId = loader->resumeSessionId();
@@ -12216,6 +12219,7 @@ void MainWindow::setupActions()
 			options.detailPassEnabled = loadDetailPassOptions().enabled;
 		options.prompt.clear();
 		options.negativePrompt.clear();
+		options.prompt = takeReusableInpaintPrompt();
 		const QString activeLayerTitle =
 			activeLayerIndex.isValid()
 				? activeLayerIndex.data(canvas::LayerListModel::TitleRole)
@@ -12234,6 +12238,7 @@ void MainWindow::setupActions()
 			   })) {
 			return;
 		}
+		rememberInpaintPrompt(options.prompt);
 		lastUnderpaintSettings = options;
 		lastUnderpaintSettings.prompt.clear();
 		lastUnderpaintSettings.negativePrompt.clear();
@@ -12611,6 +12616,7 @@ void MainWindow::setupActions()
 			options.detailPassEnabled = loadDetailPassOptions().enabled;
 		options.prompt.clear();
 		options.negativePrompt.clear();
+		options.prompt = takeReusableInpaintPrompt();
 		if(!showInpaintOptionsDialog(
 			   this, selectionRegion, options, tr("Inpaint"), tr("Selection"),
 			   tr("Describe what should appear in the selected area"),
@@ -12623,6 +12629,7 @@ void MainWindow::setupActions()
 			   })) {
 			return;
 		}
+			rememberInpaintPrompt(options.prompt);
 			lastInpaintSettings = options;
 			lastInpaintSettings.prompt.clear();
 			lastInpaintSettings.negativePrompt.clear();
@@ -13103,6 +13110,7 @@ void MainWindow::setupActions()
 				options.detailPassEnabled = loadDetailPassOptions().enabled;
 			options.prompt.clear();
 			options.negativePrompt.clear();
+			options.prompt = takeReusableInpaintPrompt();
 		if(!showInpaintOptionsDialog(
 			   this, targetRegion, options, tr("Outpaint"),
 			   tr("Outpaint region"),
@@ -13116,6 +13124,7 @@ void MainWindow::setupActions()
 			   })) {
 			return;
 		}
+			rememberInpaintPrompt(options.prompt);
 			lastOutpaintSettings = options;
 			lastOutpaintSettingsInitialized = true;
 			lastOutpaintSettings.prompt.clear();
@@ -14869,6 +14878,31 @@ void MainWindow::createDocks()
 	m_dockReference = new docks::ReferenceDock(this);
 	m_dockReference->setObjectName("referencedock");
 	m_dockReference->setAllowedAreas(Qt::AllDockWidgetAreas);
+
+	m_dockPromptManager = new QDockWidget(tr("Proompt Manager"), this);
+	m_dockPromptManager->setObjectName(QStringLiteral("UnderpaintPromptManager"));
+	m_dockPromptManager->setAllowedAreas(Qt::AllDockWidgetAreas);
+
+	QWidget *promptManagerWidget = new QWidget(m_dockPromptManager);
+	QVBoxLayout *promptManagerLayout = new QVBoxLayout(promptManagerWidget);
+	promptManagerLayout->setContentsMargins(4, 4, 4, 4);
+	promptManagerLayout->setSpacing(4);
+
+	m_promptHistorySearch = new QLineEdit(promptManagerWidget);
+	m_promptHistorySearch->setPlaceholderText(tr("Search prompts"));
+	promptManagerLayout->addWidget(m_promptHistorySearch);
+
+	m_promptHistoryList = new QListWidget(promptManagerWidget);
+	m_promptHistoryList->setSelectionMode(QAbstractItemView::NoSelection);
+	m_promptHistoryList->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+	m_promptHistoryList->setUniformItemSizes(false);
+	promptManagerLayout->addWidget(m_promptHistoryList, 1);
+
+	m_dockPromptManager->setWidget(promptManagerWidget);
+	connect(
+		m_promptHistorySearch, &QLineEdit::textChanged, this,
+		[this] { refreshPromptManager(); });
+	refreshPromptManager();
 }
 
 void MainWindow::resetDefaultDocks()
@@ -14896,6 +14930,8 @@ void MainWindow::resetDefaultDocks()
 	tabifyDockWidget(m_dockColorCircle, m_dockColorPalette);
 	tabifyDockWidget(m_dockColorPalette, m_dockColorSliders);
 	tabifyDockWidget(m_dockColorSliders, m_dockColorSpinner);
+	addDockWidget(rightArea, m_dockPromptManager);
+	m_dockPromptManager->show();
 	addDockWidget(rightArea, m_dockLayers);
 	m_dockLayers->show();
 	addDockWidget(rightArea, m_dockNavigator);
@@ -14906,6 +14942,122 @@ void MainWindow::resetDefaultDocks()
 	m_dockOnionSkins->show();
 	if(m_smallScreenMode) {
 		tabifyDockWidget(m_dockTimeline, m_dockOnionSkins);
+	}
+}
+
+void MainWindow::clearPromptHistory()
+{
+	m_inpaintPromptHistory.clear();
+	m_reusableInpaintPrompt.clear();
+	if(m_promptHistorySearch) {
+		m_promptHistorySearch->clear();
+	}
+	refreshPromptManager();
+}
+
+void MainWindow::rememberInpaintPrompt(const QString &prompt)
+{
+	const QString cleaned = prompt.simplified().trimmed();
+	if(cleaned.isEmpty()) {
+		return;
+	}
+
+	m_inpaintPromptHistory.removeAll(cleaned);
+	m_inpaintPromptHistory.prepend(cleaned);
+	while(m_inpaintPromptHistory.size() > 25) {
+		m_inpaintPromptHistory.removeLast();
+	}
+	refreshPromptManager();
+}
+
+QString MainWindow::takeReusableInpaintPrompt()
+{
+	const QString prompt = m_reusableInpaintPrompt;
+	m_reusableInpaintPrompt.clear();
+	return prompt;
+}
+
+void MainWindow::setReusableInpaintPrompt(const QString &prompt)
+{
+	m_reusableInpaintPrompt = prompt;
+	showPopupMessage(tr("Prompt queued for reuse."));
+}
+
+void MainWindow::deleteInpaintPromptHistoryEntry(const QString &prompt)
+{
+	m_inpaintPromptHistory.removeAll(prompt);
+	if(m_reusableInpaintPrompt == prompt) {
+		m_reusableInpaintPrompt.clear();
+	}
+	refreshPromptManager();
+}
+
+void MainWindow::refreshPromptManager()
+{
+	if(!m_promptHistoryList) {
+		return;
+	}
+
+	m_promptHistoryList->clear();
+	const QString filter =
+		m_promptHistorySearch ? m_promptHistorySearch->text().trimmed() : QString();
+	int visibleCount = 0;
+	for(const QString &prompt : m_inpaintPromptHistory) {
+		if(!filter.isEmpty() &&
+		   !prompt.contains(filter, Qt::CaseInsensitive)) {
+			continue;
+		}
+
+		++visibleCount;
+		QListWidgetItem *item = new QListWidgetItem(m_promptHistoryList);
+		QWidget *row = new QWidget(m_promptHistoryList);
+		QHBoxLayout *rowLayout = new QHBoxLayout(row);
+		rowLayout->setContentsMargins(4, 2, 4, 2);
+		rowLayout->setSpacing(4);
+
+		QString preview = prompt;
+		if(preview.size() > 140) {
+			preview = preview.left(137) + QStringLiteral("...");
+		}
+		QLabel *label = new QLabel(preview, row);
+		label->setToolTip(prompt);
+		label->setWordWrap(true);
+		label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+		rowLayout->addWidget(label, 1);
+
+		QToolButton *reuse = new QToolButton(row);
+		reuse->setIcon(QIcon::fromTheme(QStringLiteral("view-refresh")));
+		if(reuse->icon().isNull()) {
+			reuse->setText(QStringLiteral("R"));
+		}
+		reuse->setToolTip(tr("Reuse this prompt"));
+		reuse->setAutoRaise(true);
+		rowLayout->addWidget(reuse);
+		connect(
+			reuse, &QToolButton::clicked, this,
+			[this, prompt] { setReusableInpaintPrompt(prompt); });
+
+		QToolButton *deleteButton = new QToolButton(row);
+		deleteButton->setIcon(QIcon::fromTheme(QStringLiteral("window-close")));
+		if(deleteButton->icon().isNull()) {
+			deleteButton->setText(QStringLiteral("X"));
+		}
+		deleteButton->setToolTip(tr("Delete this prompt"));
+		deleteButton->setAutoRaise(true);
+		rowLayout->addWidget(deleteButton);
+		connect(
+			deleteButton, &QToolButton::clicked, this,
+			[this, prompt] { deleteInpaintPromptHistoryEntry(prompt); });
+
+		item->setSizeHint(row->sizeHint());
+		m_promptHistoryList->setItemWidget(item, row);
+	}
+
+	if(visibleCount == 0) {
+		QListWidgetItem *empty = new QListWidgetItem(
+			filter.isEmpty() ? tr("No prompts yet.") : tr("No matching prompts."),
+			m_promptHistoryList);
+		empty->setFlags(Qt::NoItemFlags);
 	}
 }
 

@@ -25,6 +25,7 @@ The prototype already has the first local AI workflow pieces:
 - Inpaint results import as normal candidate layers that can be previewed, accepted, canceled, or undone.
 - The inpaint dialog exposes prompt, negative prompt, candidates, seed, CFG, denoise, steps, and edge feather.
 - The progress dialog streams worker preview images and uses a determinate progress bar.
+- The `Proompt Manager` dock tracks the last 25 prompts used in the current document window for quick search, reuse, and deletion.
 - `Power Tools > Object Decomposition...` imports SAM object/part masks as editable grouped layers.
 - Object decomposition can be tested as a no-generation layer extraction pass before attempting base repair.
 - A local llama.cpp/Qwen prompt helper can rewrite inpaint prompts, classify decomposition regions, and group related object parts.
