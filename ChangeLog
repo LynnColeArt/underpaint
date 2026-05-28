@@ -1,6 +1,15 @@
 Unreleased Version 2.3.1-pre
+ * Underpaint Feature: Rebrand the fork's visible product surface to Underpaint while preserving Drawpile provenance, licensing, collaboration and session workflows.
+ * Underpaint Feature: Add a local-first AI job architecture with the `underpaint.ai-job.v1` contract, compiled worker stub, Diffusers worker, model registry, model manager and AI preferences surfaces.
+ * Underpaint Feature: Add the Power Tools menu for local image restoration workflows, including Inpaint Selection, Outpaint, Underpaint Behind Active Layer, Remove Background, Color Separation, Object Decomposition, Refiner Settings and Face & Body Detail Settings.
+ * Underpaint Feature: Add SDXL-class inpainting and outpainting workflows with prompts, negative prompts, reusable generation settings, sampler presets, seed control, CFG, denoise, step and feather controls, candidate variants and cancelable progress previews.
+ * Underpaint Feature: Add local prompt helper integration for prompt rewriting and selected-region explanation from the inpaint/outpaint dialogs.
+ * Underpaint Feature: Add object decomposition workflows with SAM-style segmentation backends, person/object priors, semantic layer naming/grouping, background remainder layers and optional background repair.
+ * Underpaint Feature: Add face/body/hands detail passes with detector-driven crop refinement, plus optional SDXL refiner support that can run before or after detail passes.
  * Underpaint Feature: Add the Proompt Manager dock for searching, reusing and deleting recent inpaint, outpaint and underpaint prompts.
  * Underpaint Fix: Make dragged, pasted and reference image imports use the native Drawdance image loader as a fallback so WEBP and QOI behave consistently even when Qt image plugins are missing or unreliable.
+ * Underpaint Fix: Show requested versus effective Diffusers denoising steps for base, refiner and detail stages so high-step renders and low-strength refiner runs are easier to diagnose.
+ * Underpaint Documentation: Add public-facing README, Linux install notes and planning docs for the local-first AI restoration direction.
 
 2026-05-16 Version 2.3.1-beta.1
  * Fix: Force canvas view dimensions to be even on hardware renderers, since otherwise the view gets scrunched on some graphics cards.

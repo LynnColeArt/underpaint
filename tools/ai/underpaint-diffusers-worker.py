@@ -340,6 +340,12 @@ def normalized_segmentation_backend(parameters: dict[str, Any]) -> dict[str, Any
     }
 
 
+def effective_diffusion_steps(steps: int, strength: float) -> int:
+    steps = max(1, int(steps))
+    strength = max(0.0, min(float(strength), 1.0))
+    return max(1, min(int(steps * strength), steps))
+
+
 def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
     raw = parameters.get("refiner", {})
     if not isinstance(raw, dict):
@@ -387,6 +393,7 @@ def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
     steps = max(1, min(int(raw.get("steps", 20)), 200))
     if strength > 0.0 and int(steps * strength) < 1:
         steps = max(steps, math.ceil(1.0 / strength))
+    effective_steps = effective_diffusion_steps(steps, strength)
     return {
         "enabled": bool(raw.get("enabled", False)),
         "modelId": model_id,
@@ -395,6 +402,7 @@ def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
         "displayName": str(registry_entry.get("displayName", "")),
         "strength": strength,
         "steps": steps,
+        "effectiveSteps": effective_steps,
         "scheduler": normalize_scheduler_name(raw.get("scheduler", "dpmpp-3m-karras")),
         "placement": placement,
         "runner": str(os.environ.get("UNDERPAINT_GGUF_REFINER_WORKER", "")).strip(),
@@ -408,6 +416,7 @@ def refiner_diagnostics(refiner: dict[str, Any]) -> dict[str, Any]:
         "model": refiner["model"],
         "strength": refiner["strength"],
         "steps": refiner["steps"],
+        "effectiveSteps": refiner["effectiveSteps"],
         "scheduler": refiner["scheduler"],
         "placement": refiner["placement"],
         "appliedCandidates": 0,
@@ -421,6 +430,8 @@ def normalized_detail_pass(parameters: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raw = {}
     enabled = bool(raw.get("enabled", False))
+    denoise = max(0.05, min(float(raw.get("denoise", 0.35)), 1.0))
+    steps = max(1, min(int(raw.get("steps", 28)), 200))
     return {
         "enabled": enabled,
         "faceEnabled": bool(raw.get("faceEnabled", True)),
@@ -433,8 +444,9 @@ def normalized_detail_pass(parameters: dict[str, Any]) -> dict[str, Any]:
         "maskPaddingPx": max(0, min(int(raw.get("maskPaddingPx", 32)), 256)),
         "detailRenderEdge": max(256, min(int(raw.get("detailRenderEdge", 768)), 1536)),
         "minCropEdge": max(64, min(int(raw.get("minCropEdge", 256)), 1024)),
-        "denoise": max(0.05, min(float(raw.get("denoise", 0.35)), 1.0)),
-        "steps": max(1, min(int(raw.get("steps", 28)), 200)),
+        "denoise": denoise,
+        "steps": steps,
+        "effectiveSteps": effective_diffusion_steps(steps, denoise),
         "scheduler": normalize_scheduler_name(raw.get("scheduler", "euler")),
         "fallbackToEditMask": False,
     }
@@ -460,6 +472,7 @@ def detail_pass_diagnostics(detail_pass: dict[str, Any]) -> dict[str, Any]:
         "minCropEdge": detail_pass["minCropEdge"],
         "denoise": detail_pass["denoise"],
         "steps": detail_pass["steps"],
+        "effectiveSteps": detail_pass["effectiveSteps"],
         "scheduler": detail_pass["scheduler"],
         "fallbackToEditMask": detail_pass["fallbackToEditMask"],
         "detectedRegions": 0,
@@ -3276,6 +3289,9 @@ def run_detail_pass(
                     "renderHeight": source_padded.height,
                 }
             )
+            detail_effective_steps = effective_diffusion_steps(
+                detail_pass["steps"], detail_pass["denoise"]
+            )
 
             def on_detail_step_end(
                 pipeline: Any, step_index: int, timestep: Any, callback_kwargs: dict[str, Any]
@@ -3284,9 +3300,18 @@ def run_detail_pass(
                 step = int(step_index) + 1
                 interval = max(
                     1,
-                    min(8, detail_pass["steps"] // 8 if detail_pass["steps"] >= 8 else 1),
+                    min(
+                        8,
+                        detail_effective_steps // 8
+                        if detail_effective_steps >= 8
+                        else 1,
+                    ),
                 )
-                if step == 1 or step == detail_pass["steps"] or step % interval == 0:
+                if (
+                    step == 1
+                    or step == detail_effective_steps
+                    or step % interval == 0
+                ):
                     emit_progress(
                         {
                             "type": "detail",
@@ -3296,7 +3321,9 @@ def run_detail_pass(
                             "regionIndex": region_index,
                             "regions": len(regions),
                             "step": step,
-                            "steps": detail_pass["steps"],
+                            "steps": detail_effective_steps,
+                            "requestedSteps": detail_pass["steps"],
+                            "denoise": detail_pass["denoise"],
                             "renderWidth": source_padded.width,
                             "renderHeight": source_padded.height,
                         }
@@ -3392,11 +3419,17 @@ def run_refiner_pass(
     device: str,
     candidate_index: int,
 ) -> Image.Image:
+    effective_steps = effective_diffusion_steps(
+        refiner["steps"], refiner["strength"]
+    )
     emit_progress(
         {
             "type": "refiner",
             "status": "starting",
             "candidate": candidate_index,
+            "steps": effective_steps,
+            "requestedSteps": refiner["steps"],
+            "strength": refiner["strength"],
         }
     )
     last_step = 0
@@ -3407,8 +3440,11 @@ def run_refiner_pass(
         del pipeline, timestep
         nonlocal last_step
         step = int(step_index) + 1
-        interval = max(1, min(8, refiner["steps"] // 8 if refiner["steps"] >= 8 else 1))
-        if step == 1 or step == refiner["steps"] or step - last_step >= interval:
+        interval = max(
+            1,
+            min(8, effective_steps // 8 if effective_steps >= 8 else 1),
+        )
+        if step == 1 or step == effective_steps or step - last_step >= interval:
             last_step = step
             emit_progress(
                 {
@@ -3416,7 +3452,9 @@ def run_refiner_pass(
                     "status": "refining",
                     "candidate": candidate_index,
                     "step": step,
-                    "steps": refiner["steps"],
+                    "steps": effective_steps,
+                    "requestedSteps": refiner["steps"],
+                    "strength": refiner["strength"],
                 }
             )
         return callback_kwargs
@@ -3437,8 +3475,10 @@ def run_refiner_pass(
             "type": "refiner",
             "status": "complete",
             "candidate": candidate_index,
-            "step": refiner["steps"],
-            "steps": refiner["steps"],
+            "step": effective_steps,
+            "steps": effective_steps,
+            "requestedSteps": refiner["steps"],
+            "strength": refiner["strength"],
         }
     )
     return refined.convert("RGB")
@@ -4136,6 +4176,8 @@ def main(argv: list[str]) -> int:
     preview_every_steps = max(1, min(preview_every_steps, max(1, steps)))
     if strength > 0.0 and int(steps * strength) < 1:
         steps = max(steps, math.ceil(1.0 / strength))
+    base_effective_steps = effective_diffusion_steps(steps, strength)
+    preview_every_steps = max(1, min(preview_every_steps, base_effective_steps))
     requested_seed = int(parameters.get("seed", -1))
     max_base_seed = (2**31 - 1) - candidate_count
     base_seed = (
@@ -4164,6 +4206,7 @@ def main(argv: list[str]) -> int:
             "cfg": cfg,
             "denoise": strength,
             "steps": steps,
+            "effectiveSteps": base_effective_steps,
             "scheduler": scheduler_name,
             "seed": base_seed,
             "requestedSeed": requested_seed,
@@ -4245,6 +4288,8 @@ def main(argv: list[str]) -> int:
                     "candidate": index + 1,
                     "seed": seed,
                     "steps": steps,
+                    "effectiveSteps": base_effective_steps,
+                    "denoise": strength,
                     "scheduler": scheduler_name,
                 },
             )
@@ -4258,7 +4303,10 @@ def main(argv: list[str]) -> int:
             def on_step_end(pipeline: Any, step_index: int, timestep: Any, callback_kwargs: dict[str, Any]) -> dict[str, Any]:
                 nonlocal last_preview_step
                 step = step_index + 1
-                if step != steps and step - last_preview_step < preview_every_steps:
+                if (
+                    step != base_effective_steps
+                    and step - last_preview_step < preview_every_steps
+                ):
                     return {}
                 last_preview_step = step
                 try:
@@ -4281,7 +4329,9 @@ def main(argv: list[str]) -> int:
                             "id": preview_id,
                             "candidate": index + 1,
                             "step": step,
-                            "steps": steps,
+                            "steps": base_effective_steps,
+                            "requestedSteps": steps,
+                            "denoise": strength,
                             "seed": seed,
                             "imagePath": str(preview_path),
                         }
@@ -4322,6 +4372,9 @@ def main(argv: list[str]) -> int:
                     "seed": seed,
                     "scheduler": scheduler_key,
                     "schedulerClass": scheduler_class,
+                    "steps": steps,
+                    "effectiveSteps": base_effective_steps,
+                    "denoise": strength,
                     "width": generated.width,
                     "height": generated.height,
                 },
@@ -4333,6 +4386,9 @@ def main(argv: list[str]) -> int:
                     "image": generated.convert("RGB"),
                     "scheduler": scheduler_key,
                     "schedulerClass": scheduler_class,
+                    "steps": steps,
+                    "effectiveSteps": base_effective_steps,
+                    "denoise": strength,
                 }
             )
 
@@ -4589,6 +4645,9 @@ def main(argv: list[str]) -> int:
                         "modelAdapter": model_config["adapter"],
                         "scheduler": candidate["scheduler"],
                         "schedulerClass": candidate["schedulerClass"],
+                        "steps": candidate["steps"],
+                        "effectiveSteps": candidate["effectiveSteps"],
+                        "denoise": candidate["denoise"],
                         "refiner": candidate.get("refiner", refiner_report),
                         "detailPass": candidate_detail_report,
                         "renderWidth": unpadded_render_size[0],
@@ -4658,6 +4717,9 @@ def main(argv: list[str]) -> int:
         "targetRenderEdge": target_render_edge,
         "scheduler": scheduler_key,
         "schedulerClass": scheduler_class,
+        "denoise": strength,
+        "steps": steps,
+        "effectiveSteps": base_effective_steps,
         "modelFormat": model_config["format"],
         "modelAdapter": model_config["adapter"],
         "refiner": refiner_report,

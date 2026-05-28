@@ -4884,6 +4884,13 @@ QWidget *makeIntSlider(
 	return widget;
 }
 
+int effectiveDiffusionSteps(int steps, double strength)
+{
+	steps = qMax(1, steps);
+	strength = qBound(0.0, strength, 1.0);
+	return qMax(1, qMin(int(steps * strength), steps));
+}
+
 QString underpaintRegistryPath()
 {
 	const QProcessEnvironment environment = QProcessEnvironment::systemEnvironment();
@@ -5058,11 +5065,13 @@ void saveRefinerOptions(const RefinerOptions &options)
 QString refinerSummary(const RefinerOptions &options)
 {
 	return options.enabled
-			   ? MainWindow::tr("On: %1 via %2, strength %3, %4 steps, %5")
+			   ? MainWindow::tr(
+					 "On: %1 via %2, strength %3, %4 steps (~%5 effective), %6")
 					 .arg(options.model)
 					 .arg(options.backend)
 					 .arg(options.strength, 0, 'f', 2)
 					 .arg(options.steps)
+					 .arg(effectiveDiffusionSteps(options.steps, options.strength))
 					 .arg(refinerPlacementLabel(options.placement))
 			   : MainWindow::tr("Off");
 }
@@ -5194,9 +5203,12 @@ QString detailPassSummary(const DetailPassOptions &options)
 	}
 	return enabledParts.isEmpty()
 			   ? MainWindow::tr("On, no regions enabled")
-			   : MainWindow::tr("On: %1, %2 px detail edge")
+			   : MainWindow::tr(
+					 "On: %1, %2 px detail edge, %3 steps (~%4 effective)")
 					 .arg(enabledParts.join(QStringLiteral(", ")))
-					 .arg(options.detailRenderEdge);
+					 .arg(options.detailRenderEdge)
+					 .arg(options.steps)
+					 .arg(effectiveDiffusionSteps(options.steps, options.denoise));
 }
 
 void addSchedulerChoices(QComboBox *scheduler)
@@ -7569,6 +7581,20 @@ QString candidateDetailsText(
 	if(!scheduler.isEmpty()) {
 		details += MainWindow::tr("\nSampler: %1").arg(scheduler);
 	}
+	if(diagnostics.contains(QStringLiteral("steps"))) {
+		const int steps = diagnostics.value(QStringLiteral("steps")).toInt();
+		const int effectiveSteps =
+			diagnostics.value(QStringLiteral("effectiveSteps")).toInt();
+		const double denoise =
+			diagnostics.value(QStringLiteral("denoise")).toDouble();
+		details += MainWindow::tr("\nBase pass: denoise %1, %2 steps")
+					   .arg(denoise, 0, 'f', 2)
+					   .arg(steps);
+		if(effectiveSteps > 0 && effectiveSteps != steps) {
+			details += MainWindow::tr(" (~%1 effective)")
+						   .arg(effectiveSteps);
+		}
+	}
 	const QString device = diagnostics.value(QStringLiteral("device")).toString();
 	if(!device.isEmpty()) {
 		details += MainWindow::tr("\nDevice: %1").arg(device);
@@ -7597,6 +7623,22 @@ QString candidateDetailsText(
 			if(!backend.isEmpty()) {
 				details += MainWindow::tr(" (%1)").arg(backend);
 			}
+			const int refinerSteps =
+				refiner.value(QStringLiteral("steps")).toInt();
+			const int refinerEffectiveSteps =
+				refiner.value(QStringLiteral("effectiveSteps")).toInt();
+			const double refinerStrength =
+				refiner.value(QStringLiteral("strength")).toDouble();
+			if(refinerSteps > 0) {
+				details += MainWindow::tr(", strength %1, %2 steps")
+							   .arg(refinerStrength, 0, 'f', 2)
+							   .arg(refinerSteps);
+				if(refinerEffectiveSteps > 0 &&
+				   refinerEffectiveSteps != refinerSteps) {
+					details += MainWindow::tr(" (~%1 effective)")
+								   .arg(refinerEffectiveSteps);
+				}
+			}
 		}
 		const QJsonObject detailPass =
 			diagnostics.value(QStringLiteral("detailPass")).toObject();
@@ -7618,6 +7660,21 @@ QString candidateDetailsText(
 			detailPass.value(QStringLiteral("detailRenderEdge")).toInt();
 		if(detailRenderEdge > 0) {
 			details += MainWindow::tr(", %1 px edge").arg(detailRenderEdge);
+		}
+		const int detailSteps =
+			detailPass.value(QStringLiteral("steps")).toInt();
+		const int detailEffectiveSteps =
+			detailPass.value(QStringLiteral("effectiveSteps")).toInt();
+		const double detailDenoise =
+			detailPass.value(QStringLiteral("denoise")).toDouble();
+		if(detailSteps > 0) {
+			details += MainWindow::tr(", denoise %1, %2 steps")
+						   .arg(detailDenoise, 0, 'f', 2)
+						   .arg(detailSteps);
+			if(detailEffectiveSteps > 0 && detailEffectiveSteps != detailSteps) {
+				details += MainWindow::tr(" (~%1 effective)")
+							   .arg(detailEffectiveSteps);
+			}
 		}
 		const int detectedRegions =
 			detailPass.value(QStringLiteral("detectedRegions")).toInt();
@@ -12340,11 +12397,21 @@ void MainWindow::setupActions()
 				{QStringLiteral("uiEntryPoint"), QStringLiteral("Power Tools/Underpaint Behind")},
 			};
 
-		const int progressSteps = qMax(1, options.steps);
-		const int progressRefinerSteps =
-			options.refinerEnabled ? qMax(1, loadRefinerOptions().steps) : 0;
-		const int progressDetailSteps =
-			options.detailPassEnabled ? qMax(1, loadDetailPassOptions().steps) : 0;
+			const int progressSteps =
+				effectiveDiffusionSteps(options.steps, options.denoise);
+			const RefinerOptions progressRefinerOptions = loadRefinerOptions();
+			const int progressRefinerSteps =
+				options.refinerEnabled
+					? effectiveDiffusionSteps(
+						  progressRefinerOptions.steps,
+						  progressRefinerOptions.strength)
+					: 0;
+			const DetailPassOptions progressDetailOptions = loadDetailPassOptions();
+			const int progressDetailSteps =
+				options.detailPassEnabled
+					? effectiveDiffusionSteps(
+						  progressDetailOptions.steps, progressDetailOptions.denoise)
+					: 0;
 		const int progressStepStride =
 			progressSteps + progressRefinerSteps + progressDetailSteps;
 		const int progressCandidates = qMax(1, options.candidateCount);
@@ -12729,11 +12796,21 @@ void MainWindow::setupActions()
 				{QStringLiteral("uiEntryPoint"), QStringLiteral("Power Tools/Inpaint")},
 			};
 
-		const int progressSteps = qMax(1, options.steps);
-		const int progressRefinerSteps =
-			options.refinerEnabled ? qMax(1, loadRefinerOptions().steps) : 0;
-		const int progressDetailSteps =
-			options.detailPassEnabled ? qMax(1, loadDetailPassOptions().steps) : 0;
+			const int progressSteps =
+				effectiveDiffusionSteps(options.steps, options.denoise);
+			const RefinerOptions progressRefinerOptions = loadRefinerOptions();
+			const int progressRefinerSteps =
+				options.refinerEnabled
+					? effectiveDiffusionSteps(
+						  progressRefinerOptions.steps,
+						  progressRefinerOptions.strength)
+					: 0;
+			const DetailPassOptions progressDetailOptions = loadDetailPassOptions();
+			const int progressDetailSteps =
+				options.detailPassEnabled
+					? effectiveDiffusionSteps(
+						  progressDetailOptions.steps, progressDetailOptions.denoise)
+					: 0;
 		const int progressStepStride =
 			progressSteps + progressRefinerSteps + progressDetailSteps;
 		const int progressCandidates = qMax(1, options.candidateCount);
@@ -13227,11 +13304,21 @@ void MainWindow::setupActions()
 				{QStringLiteral("uiEntryPoint"), QStringLiteral("Power Tools/Outpaint")},
 			};
 
-		const int progressSteps = qMax(1, options.steps);
-		const int progressRefinerSteps =
-			options.refinerEnabled ? qMax(1, loadRefinerOptions().steps) : 0;
-		const int progressDetailSteps =
-			options.detailPassEnabled ? qMax(1, loadDetailPassOptions().steps) : 0;
+			const int progressSteps =
+				effectiveDiffusionSteps(options.steps, options.denoise);
+			const RefinerOptions progressRefinerOptions = loadRefinerOptions();
+			const int progressRefinerSteps =
+				options.refinerEnabled
+					? effectiveDiffusionSteps(
+						  progressRefinerOptions.steps,
+						  progressRefinerOptions.strength)
+					: 0;
+			const DetailPassOptions progressDetailOptions = loadDetailPassOptions();
+			const int progressDetailSteps =
+				options.detailPassEnabled
+					? effectiveDiffusionSteps(
+						  progressDetailOptions.steps, progressDetailOptions.denoise)
+					: 0;
 		const int progressStepStride =
 			progressSteps + progressRefinerSteps + progressDetailSteps;
 		const int progressCandidates = qMax(1, options.candidateCount);
