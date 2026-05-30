@@ -47,6 +47,7 @@ signals:
 	void touchScrolledBy(qreal dx, qreal dy);
 	void touchZoomedRotated(qreal zoom, qreal rotation);
 	void touchTapActionActivated(int action);
+	void touchTapTriggerActivated(const QString &trigger);
 	void touchColorPicked(const QPointF &posf);
 	void touchColorPickFinished();
 
@@ -56,10 +57,16 @@ protected:
 	void setTwoFingerPinchAction(int twoFingerPinchAction);
 	void setTwoFingerTwistAction(int twoFingerTwistAction);
 	void setOneFingerTapAction(int oneFingerTapAction);
+	void setOneFingerTapTrigger(const QString &oneFingerTapTrigger);
 	void setTwoFingerTapAction(int twoFingerTapAction);
+	void setTwoFingerTapTrigger(const QString &twoFingerTapTrigger);
 	void setThreeFingerTapAction(int threeFingerTapAction);
+	void setThreeFingerTapTrigger(const QString &threeFingerTapTrigger);
 	void setFourFingerTapAction(int fourFingerTapAction);
+	void setFourFingerTapTrigger(const QString &fourFingerTapTrigger);
 	void setOneFingerTapAndHoldAction(int oneFingerTapAndHoldAction);
+	void setOneFingerDoubleTapAction(int oneFingerDoubleTapAction);
+	void setOneFingerDoubleTapTrigger(const QString &oneFingerDoubleTapTrigger);
 	void setSmoothing(int smoothing);
 
 	void scrollBy(qreal dx, qreal dy);
@@ -67,15 +74,40 @@ protected:
 	void zoomRotate(qreal zoom, qreal rotation);
 	qreal adjustTwistRotation(qreal degrees) const;
 
-	void emitOneFingerTapAction() { emitTapAction(m_oneFingerTapAction); }
-	void emitTwoFingerTapAction() { emitTapAction(m_twoFingerTapAction); }
-	void emitThreeFingerTapAction() { emitTapAction(m_threeFingerTapAction); }
-	void emitFourFingerTapAction() { emitTapAction(m_fourFingerTapAction); }
+	void flushBufferedOneFingerSingleTap();
+
+	void handleOneFingerTap() { handleOneFingerTapWith(nullptr); }
+
+	void emitOneFingerTapAction()
+	{
+		emitTapAction(m_oneFingerTapAction, m_oneFingerTapTrigger);
+	}
+
+	void emitTwoFingerTapAction()
+	{
+		emitTapAction(m_twoFingerTapAction, m_twoFingerTapTrigger);
+	}
+
+	void emitThreeFingerTapAction()
+	{
+		emitTapAction(m_threeFingerTapAction, m_threeFingerTapTrigger);
+	}
+
+	void emitFourFingerTapAction()
+	{
+		emitTapAction(m_fourFingerTapAction, m_fourFingerTapTrigger);
+	}
+
+	void emitOneFingerDoubleTapAction()
+	{
+		emitTapAction(m_oneFingerDoubleTapAction, m_oneFingerDoubleTapTrigger);
+	}
 
 private:
 	static constexpr qreal TAP_SLOP_SQUARED = 16.0 * 16.0;
 	static constexpr int TAP_MAX_DELAY_MS = 1000;
 	static constexpr int TAP_AND_HOLD_DELAY_MS = 400;
+	static constexpr int MULTI_TAP_DELAY_MS = 200;
 	static constexpr int DRAW_BUFFER_COUNT = 20;
 	// On Android with UI scaling set to something other than 100%, the start
 	// values jitter by very large amounts. It goes up to around 1.1 at most
@@ -140,10 +172,37 @@ private:
 	void updateSmoothedMotion();
 
 	void triggerTapAndHold();
-
 	void flushTouchDrawBuffer();
-	void emitTapAction(int action);
+	void flushDelayedTouchDrawBuffer();
+	void flushTouchDrawPoints(
+		QVector<TouchDrawPoint> &buffer, const QPoint &globalPos,
+		bool releaseLast);
+	void handleOneFingerTapWith(TouchDrawPoint *releasePointOrNull);
+	void emitTapAction(int action, const QString &trigger);
 
+	void startTapAndHoldTimer() { safeStartTimer("hold", m_tapAndHoldTimer); }
+	void stopTapAndHoldTimer() { safeStopTimer("hold", m_tapAndHoldTimer); }
+	void startMultiTapTimer() { safeStartTimer("multi-tap", m_multiTapTimer); }
+	void stopMultiTapTimer() { safeStopTimer("multi-tap", m_multiTapTimer); }
+	void safeStartTimer(const char *title, QTimer *timer);
+	void safeStopTimer(const char *title, QTimer *timer);
+
+	void setUpMultiTapTimer();
+
+	bool haveOneFingerTapAction() const
+	{
+		return haveTapAction(m_oneFingerTapAction, m_oneFingerTapTrigger);
+	}
+
+	bool haveOneFingerDoubleTapAction() const
+	{
+		return haveTapAction(
+			m_oneFingerDoubleTapAction, m_oneFingerDoubleTapTrigger);
+	}
+
+	bool haveOneFingerTapAndHoldAction() const;
+
+	static bool haveTapAction(int action, const QString &trigger);
 	static bool shouldExecuteTap(bool cancel, int lastTouchPoints);
 
 	bool m_touching = false;
@@ -154,6 +213,7 @@ private:
 	bool m_anyTabletEventsReceived = false;
 	bool m_allowColorPick = true;
 	bool m_touchDrawPressureEnabled = false;
+	bool m_awaitingOneFingerDoubleTap = false;
 	int m_oneFingerTouchAction;
 	int m_twoFingerPinchAction;
 	int m_twoFingerTwistAction;
@@ -162,10 +222,18 @@ private:
 	int m_threeFingerTapAction;
 	int m_fourFingerTapAction;
 	int m_oneFingerTapAndHoldAction;
+	int m_oneFingerDoubleTapAction;
 	TouchMode m_touchMode = TouchMode::Unknown;
 	QVector<TouchDrawPoint> m_touchDrawBuffer;
+	QVector<TouchDrawPoint> m_delayedTouchDrawBuffer;
+	QString m_oneFingerTapTrigger;
+	QString m_twoFingerTapTrigger;
+	QString m_threeFingerTapTrigger;
+	QString m_fourFingerTapTrigger;
+	QString m_oneFingerDoubleTapTrigger;
 	TouchState m_touchState;
 	QPoint m_touchGlobalPos;
+	QPoint m_delayedTouchGlobalPos;
 	qreal m_touchStartZoom = 0.0;
 	qreal m_touchStartRotate = 0.0;
 	QPointF m_gestureStartPos;
@@ -179,7 +247,8 @@ private:
 	qreal m_smoothRotationTarget = 0.0;
 	qreal m_smoothMultiplier = 0.5;
 	QDeadlineTimer m_tapTimer;
-	QTimer *m_tapAndHoldTimer;
+	QTimer *m_tapAndHoldTimer = nullptr;
+	QTimer *m_multiTapTimer = nullptr;
 	QTimer *m_smoothTimer = nullptr;
 };
 

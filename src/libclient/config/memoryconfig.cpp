@@ -1085,6 +1085,19 @@ void MemoryConfig::setFourFingerTap(int value)
 	}
 }
 
+QString MemoryConfig::getFourFingerTapTrigger() const
+{
+	return m_fourFingerTapTrigger;
+}
+
+void MemoryConfig::setFourFingerTapTrigger(const QString &value)
+{
+	if(value != m_fourFingerTapTrigger) {
+		m_fourFingerTapTrigger = value;
+		Q_EMIT changeFourFingerTapTrigger(m_fourFingerTapTrigger);
+	}
+}
+
 QString MemoryConfig::getGlobalPressureCurve() const
 {
 	return m_globalPressureCurve;
@@ -2231,6 +2244,32 @@ void MemoryConfig::setNotifSoundUnlock(bool value)
 	}
 }
 
+int MemoryConfig::getOneFingerDoubleTap() const
+{
+	return m_oneFingerDoubleTap;
+}
+
+void MemoryConfig::setOneFingerDoubleTap(int value)
+{
+	if(value != m_oneFingerDoubleTap) {
+		m_oneFingerDoubleTap = value;
+		Q_EMIT changeOneFingerDoubleTap(m_oneFingerDoubleTap);
+	}
+}
+
+QString MemoryConfig::getOneFingerDoubleTapTrigger() const
+{
+	return m_oneFingerDoubleTapTrigger;
+}
+
+void MemoryConfig::setOneFingerDoubleTapTrigger(const QString &value)
+{
+	if(value != m_oneFingerDoubleTapTrigger) {
+		m_oneFingerDoubleTapTrigger = value;
+		Q_EMIT changeOneFingerDoubleTapTrigger(m_oneFingerDoubleTapTrigger);
+	}
+}
+
 int MemoryConfig::getOneFingerTap() const
 {
 	return m_oneFingerTap;
@@ -2254,6 +2293,19 @@ void MemoryConfig::setOneFingerTapAndHold(int value)
 	if(value != m_oneFingerTapAndHold) {
 		m_oneFingerTapAndHold = value;
 		Q_EMIT changeOneFingerTapAndHold(m_oneFingerTapAndHold);
+	}
+}
+
+QString MemoryConfig::getOneFingerTapTrigger() const
+{
+	return m_oneFingerTapTrigger;
+}
+
+void MemoryConfig::setOneFingerTapTrigger(const QString &value)
+{
+	if(value != m_oneFingerTapTrigger) {
+		m_oneFingerTapTrigger = value;
+		Q_EMIT changeOneFingerTapTrigger(m_oneFingerTapTrigger);
 	}
 }
 
@@ -2923,6 +2975,19 @@ void MemoryConfig::setThreeFingerTap(int value)
 	}
 }
 
+QString MemoryConfig::getThreeFingerTapTrigger() const
+{
+	return m_threeFingerTapTrigger;
+}
+
+void MemoryConfig::setThreeFingerTapTrigger(const QString &value)
+{
+	if(value != m_threeFingerTapTrigger) {
+		m_threeFingerTapTrigger = value;
+		Q_EMIT changeThreeFingerTapTrigger(m_threeFingerTapTrigger);
+	}
+}
+
 QColor MemoryConfig::getTimelapseBackdropColor() const
 {
 	return m_timelapseBackdropColor;
@@ -3298,6 +3363,19 @@ void MemoryConfig::setTwoFingerTap(int value)
 	if(value != m_twoFingerTap) {
 		m_twoFingerTap = value;
 		Q_EMIT changeTwoFingerTap(m_twoFingerTap);
+	}
+}
+
+QString MemoryConfig::getTwoFingerTapTrigger() const
+{
+	return m_twoFingerTapTrigger;
+}
+
+void MemoryConfig::setTwoFingerTapTrigger(const QString &value)
+{
+	if(value != m_twoFingerTapTrigger) {
+		m_twoFingerTapTrigger = value;
+		Q_EMIT changeTwoFingerTapTrigger(m_twoFingerTapTrigger);
 	}
 }
 

@@ -309,10 +309,10 @@ significantly better when using a physical keyboard.
 +    {
 +        setFocusable(true);
 +        setFocusableInTouchMode(true);
-+        setFocusedByDefault(true);
-+        // On some devices, the entire view gets tinted blue when a key is
-+        // pressed to let the user know it's in focus. This should disable it.
 +        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++            // On some devices, the entire view gets tinted blue when a key is
++            // pressed to let the user know it's in focus. This should disable it.
++            setFocusedByDefault(true);
 +            setDefaultFocusHighlightEnabled(false);
 +        }
 +    }

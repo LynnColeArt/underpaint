@@ -317,6 +317,10 @@ SettingsConfig::SettingsConfig(
 		m_settings, &desktop::settings::Settings::fourFingerTapChanged, this,
 		&SettingsConfig::changeFourFingerTap, Qt::DirectConnection);
 	connect(
+		m_settings, &desktop::settings::Settings::fourFingerTapTriggerChanged,
+		this, &SettingsConfig::changeFourFingerTapTrigger,
+		Qt::DirectConnection);
+	connect(
 		m_settings, &desktop::settings::Settings::globalPressureCurveChanged,
 		this, &SettingsConfig::changeGlobalPressureCurve, Qt::DirectConnection);
 	connect(
@@ -608,11 +612,21 @@ SettingsConfig::SettingsConfig(
 		m_settings, &desktop::settings::Settings::notifSoundUnlockChanged, this,
 		&SettingsConfig::changeNotifSoundUnlock, Qt::DirectConnection);
 	connect(
+		m_settings, &desktop::settings::Settings::oneFingerDoubleTapChanged,
+		this, &SettingsConfig::changeOneFingerDoubleTap, Qt::DirectConnection);
+	connect(
+		m_settings,
+		&desktop::settings::Settings::oneFingerDoubleTapTriggerChanged, this,
+		&SettingsConfig::changeOneFingerDoubleTapTrigger, Qt::DirectConnection);
+	connect(
 		m_settings, &desktop::settings::Settings::oneFingerTapChanged, this,
 		&SettingsConfig::changeOneFingerTap, Qt::DirectConnection);
 	connect(
 		m_settings, &desktop::settings::Settings::oneFingerTapAndHoldChanged,
 		this, &SettingsConfig::changeOneFingerTapAndHold, Qt::DirectConnection);
+	connect(
+		m_settings, &desktop::settings::Settings::oneFingerTapTriggerChanged,
+		this, &SettingsConfig::changeOneFingerTapTrigger, Qt::DirectConnection);
 	connect(
 		m_settings, &desktop::settings::Settings::oneFingerTouchChanged, this,
 		&SettingsConfig::changeOneFingerTouch, Qt::DirectConnection);
@@ -791,6 +805,10 @@ SettingsConfig::SettingsConfig(
 		m_settings, &desktop::settings::Settings::threeFingerTapChanged, this,
 		&SettingsConfig::changeThreeFingerTap, Qt::DirectConnection);
 	connect(
+		m_settings, &desktop::settings::Settings::threeFingerTapTriggerChanged,
+		this, &SettingsConfig::changeThreeFingerTapTrigger,
+		Qt::DirectConnection);
+	connect(
 		m_settings, &desktop::settings::Settings::timelapseBackdropColorChanged,
 		this, &SettingsConfig::changeTimelapseBackdropColor,
 		Qt::DirectConnection);
@@ -898,6 +916,9 @@ SettingsConfig::SettingsConfig(
 	connect(
 		m_settings, &desktop::settings::Settings::twoFingerTapChanged, this,
 		&SettingsConfig::changeTwoFingerTap, Qt::DirectConnection);
+	connect(
+		m_settings, &desktop::settings::Settings::twoFingerTapTriggerChanged,
+		this, &SettingsConfig::changeTwoFingerTapTrigger, Qt::DirectConnection);
 	connect(
 		m_settings, &desktop::settings::Settings::twoFingerTwistChanged, this,
 		&SettingsConfig::changeTwoFingerTwist, Qt::DirectConnection);
@@ -1777,6 +1798,16 @@ int SettingsConfig::getFourFingerTap() const
 void SettingsConfig::setFourFingerTap(int value)
 {
 	m_settings->setFourFingerTap(value);
+}
+
+QString SettingsConfig::getFourFingerTapTrigger() const
+{
+	return m_settings->fourFingerTapTrigger();
+}
+
+void SettingsConfig::setFourFingerTapTrigger(const QString &value)
+{
+	m_settings->setFourFingerTapTrigger(value);
 }
 
 QString SettingsConfig::getGlobalPressureCurve() const
@@ -2661,6 +2692,26 @@ void SettingsConfig::setNotifSoundUnlock(bool value)
 	m_settings->setNotifSoundUnlock(value);
 }
 
+int SettingsConfig::getOneFingerDoubleTap() const
+{
+	return m_settings->oneFingerDoubleTap();
+}
+
+void SettingsConfig::setOneFingerDoubleTap(int value)
+{
+	m_settings->setOneFingerDoubleTap(value);
+}
+
+QString SettingsConfig::getOneFingerDoubleTapTrigger() const
+{
+	return m_settings->oneFingerDoubleTapTrigger();
+}
+
+void SettingsConfig::setOneFingerDoubleTapTrigger(const QString &value)
+{
+	m_settings->setOneFingerDoubleTapTrigger(value);
+}
+
 int SettingsConfig::getOneFingerTap() const
 {
 	return m_settings->oneFingerTap();
@@ -2679,6 +2730,16 @@ int SettingsConfig::getOneFingerTapAndHold() const
 void SettingsConfig::setOneFingerTapAndHold(int value)
 {
 	m_settings->setOneFingerTapAndHold(value);
+}
+
+QString SettingsConfig::getOneFingerTapTrigger() const
+{
+	return m_settings->oneFingerTapTrigger();
+}
+
+void SettingsConfig::setOneFingerTapTrigger(const QString &value)
+{
+	m_settings->setOneFingerTapTrigger(value);
 }
 
 int SettingsConfig::getOneFingerTouch() const
@@ -3193,6 +3254,16 @@ void SettingsConfig::setThreeFingerTap(int value)
 	m_settings->setThreeFingerTap(value);
 }
 
+QString SettingsConfig::getThreeFingerTapTrigger() const
+{
+	return m_settings->threeFingerTapTrigger();
+}
+
+void SettingsConfig::setThreeFingerTapTrigger(const QString &value)
+{
+	m_settings->setThreeFingerTapTrigger(value);
+}
+
 QColor SettingsConfig::getTimelapseBackdropColor() const
 {
 	return m_settings->timelapseBackdropColor();
@@ -3481,6 +3552,16 @@ int SettingsConfig::getTwoFingerTap() const
 void SettingsConfig::setTwoFingerTap(int value)
 {
 	m_settings->setTwoFingerTap(value);
+}
+
+QString SettingsConfig::getTwoFingerTapTrigger() const
+{
+	return m_settings->twoFingerTapTrigger();
+}
+
+void SettingsConfig::setTwoFingerTapTrigger(const QString &value)
+{
+	m_settings->setTwoFingerTapTrigger(value);
 }
 
 int SettingsConfig::getTwoFingerTwist() const

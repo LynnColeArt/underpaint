@@ -8289,6 +8289,12 @@ void MainWindow::handleTouchTapAction(int action)
 	case int(view::TouchTapAction::RecolorMode):
 		getAction("currentrecolormode")->trigger();
 		break;
+	case int(view::TouchTapAction::MirrorCanvas):
+		getAction(QStringLiteral("viewmirror"))->trigger();
+		break;
+	case int(view::TouchTapAction::FlipCanvas):
+		getAction(QStringLiteral("viewflip"))->trigger();
+		break;
 	default:
 		qWarning("Unknown tap action %d", action);
 		break;

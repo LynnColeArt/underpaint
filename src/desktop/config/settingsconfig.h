@@ -282,6 +282,9 @@ public:
 	int getFourFingerTap() const override;
 	void setFourFingerTap(int value) override;
 
+	QString getFourFingerTapTrigger() const override;
+	void setFourFingerTapTrigger(const QString &value) override;
+
 	QString getGlobalPressureCurve() const override;
 	void setGlobalPressureCurve(const QString &value) override;
 
@@ -548,11 +551,20 @@ public:
 	bool getNotifSoundUnlock() const override;
 	void setNotifSoundUnlock(bool value) override;
 
+	int getOneFingerDoubleTap() const override;
+	void setOneFingerDoubleTap(int value) override;
+
+	QString getOneFingerDoubleTapTrigger() const override;
+	void setOneFingerDoubleTapTrigger(const QString &value) override;
+
 	int getOneFingerTap() const override;
 	void setOneFingerTap(int value) override;
 
 	int getOneFingerTapAndHold() const override;
 	void setOneFingerTapAndHold(int value) override;
+
+	QString getOneFingerTapTrigger() const override;
+	void setOneFingerTapTrigger(const QString &value) override;
 
 	int getOneFingerTouch() const override;
 	void setOneFingerTouch(int value) override;
@@ -709,6 +721,9 @@ public:
 	int getThreeFingerTap() const override;
 	void setThreeFingerTap(int value) override;
 
+	QString getThreeFingerTapTrigger() const override;
+	void setThreeFingerTapTrigger(const QString &value) override;
+
 	QColor getTimelapseBackdropColor() const override;
 	void setTimelapseBackdropColor(const QColor &value) override;
 
@@ -795,6 +810,9 @@ public:
 
 	int getTwoFingerTap() const override;
 	void setTwoFingerTap(int value) override;
+
+	QString getTwoFingerTapTrigger() const override;
+	void setTwoFingerTapTrigger(const QString &value) override;
 
 	int getTwoFingerTwist() const override;
 	void setTwoFingerTwist(int value) override;

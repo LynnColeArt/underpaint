@@ -1474,7 +1474,7 @@ void FileWrangler::withFileTypeDialog(
 QString FileWrangler::getAutoTitle(Document *doc)
 {
 	QString autoTitle =
-		QDateTime::currentDateTime().toString(QStringLiteral("yyyymmdd"));
+		QDateTime::currentDateTime().toString(QStringLiteral("yyyyMMdd"));
 	autoTitle.append(QStringLiteral("_"));
 
 	QString sessionTitle;

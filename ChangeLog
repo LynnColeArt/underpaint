@@ -10,6 +10,12 @@ Unreleased Version 2.3.1-pre
  * Underpaint Fix: Make dragged, pasted and reference image imports use the native Drawdance image loader as a fallback so WEBP and QOI behave consistently even when Qt image plugins are missing or unreliable.
  * Underpaint Fix: Show requested versus effective Diffusers denoising steps for base, refiner and detail stages so high-step renders and low-strength refiner runs are easier to diagnose.
  * Underpaint Documentation: Add public-facing README, Linux install notes and planning docs for the local-first AI restoration direction.
+ * Fix: Make ratchet rotation canvas shortcut work properly when the canvas is mirrored or flipped. Thanks Bovy for reporting.
+ * Fix: Make default filename use *months* as the second number, not *minutes*. Thanks hipofiz for reporting.
+ * Fix: Allow dragging initial curve tool point to let you change its control point again. Thanks Astre for reporting.
+ * Fix: A fix for the application not starting up on Android older than 8. Thanks freyalupen for reporting.
+ * Feature: Allow triggering any action via touch taps. Thanks Bnuuyman for suggesting.
+ * Feature: Add one-finger double-tap touch action. Lets you bind stuff to tapping twice quickly with a single finger. Thanks Bnuuyman for suggesting.
 
 2026-05-16 Version 2.3.1-beta.1
  * Fix: Force canvas view dimensions to be even on hardware renderers, since otherwise the view gets scrunched on some graphics cards.
