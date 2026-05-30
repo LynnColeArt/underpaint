@@ -96,10 +96,11 @@ For each enabled detailer:
 4. Limit to the configured max region count.
 5. Expand each box by padding.
 6. Crop the image region.
-7. Resize the crop to the detail render edge, usually 768 or 1024 px.
-8. Run the diffusion detail pass on the crop.
-9. Resize the result back to the original box.
-10. Feather and blend the result back into the candidate.
+7. Expand to a square working crop when possible.
+8. Upscale the crop with the selected detail-enhancing upscale backend.
+9. Render the diffusion detail pass at a minimum 1024 px working width.
+10. Resize the result back to the original crop.
+11. Feather and blend the result back into the candidate.
 
 Detailers should be independent. A face detector, hand detector, and body
 detector should be separate registry entries that all use the same normalized
@@ -142,8 +143,9 @@ detailer entry.
 - A detailer detector can be declared in the model registry.
 - The worker can load at least one registered Ultralytics YOLO detector.
 - The worker returns normalized boxes for the enabled detector.
-- The detail pass crops each detection, renders at `detailRenderEdge`, and
-  reinserts the result at the original position.
+- The detail pass crops each detection, upscales the working crop, renders at
+  `detailRenderEdge` with a 1024 px floor, and reinserts the result at the
+  original position.
 - The UI can enable/disable at least face, body, and hand detector slots.
 - Candidate provenance records detector id, confidence threshold, region count,
   crop size, and detail render edge.

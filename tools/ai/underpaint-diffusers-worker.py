@@ -39,6 +39,10 @@ DETAIL_MODEL_FILENAMES = {
     "body": "person_yolov8n-seg.pt",
     "hands": "hand_yolov8n.pt",
 }
+DETAIL_UPSCALE_BACKEND = "pil-lanczos-unsharp"
+MIN_DETAIL_RENDER_WIDTH = 1024
+MAX_DETAIL_RENDER_EDGE = 1536
+MIN_REFINER_RENDER_WIDTH = 1024
 DEFAULT_OBJECT_DETECTOR_MODEL = (
     Path.home() / ".underpaint/models/detection/yolo11n-seg.pt"
 )
@@ -394,6 +398,17 @@ def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
     if strength > 0.0 and int(steps * strength) < 1:
         steps = max(steps, math.ceil(1.0 / strength))
     effective_steps = effective_diffusion_steps(steps, strength)
+    min_render_width = max(
+        512,
+        min(
+            int(
+                os.environ.get("UNDERPAINT_REFINER_MIN_RENDER_WIDTH")
+                or raw.get("minRenderWidth")
+                or MIN_REFINER_RENDER_WIDTH
+            ),
+            2048,
+        ),
+    )
     return {
         "enabled": bool(raw.get("enabled", False)),
         "modelId": model_id,
@@ -406,6 +421,8 @@ def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
         "scheduler": normalize_scheduler_name(raw.get("scheduler", "dpmpp-3m-karras")),
         "placement": placement,
         "runner": str(os.environ.get("UNDERPAINT_GGUF_REFINER_WORKER", "")).strip(),
+        "minRenderWidth": min_render_width,
+        "upscaleBackend": DETAIL_UPSCALE_BACKEND,
     }
 
 
@@ -419,6 +436,8 @@ def refiner_diagnostics(refiner: dict[str, Any]) -> dict[str, Any]:
         "effectiveSteps": refiner["effectiveSteps"],
         "scheduler": refiner["scheduler"],
         "placement": refiner["placement"],
+        "minRenderWidth": refiner["minRenderWidth"],
+        "upscaleBackend": refiner["upscaleBackend"],
         "appliedCandidates": 0,
     }
     diagnostics["status"] = "pending" if refiner["enabled"] else "disabled"
@@ -432,6 +451,10 @@ def normalized_detail_pass(parameters: dict[str, Any]) -> dict[str, Any]:
     enabled = bool(raw.get("enabled", False))
     denoise = max(0.05, min(float(raw.get("denoise", 0.35)), 1.0))
     steps = max(1, min(int(raw.get("steps", 28)), 200))
+    detail_render_edge = max(
+        MIN_DETAIL_RENDER_WIDTH,
+        min(int(raw.get("detailRenderEdge", MIN_DETAIL_RENDER_WIDTH)), MAX_DETAIL_RENDER_EDGE),
+    )
     return {
         "enabled": enabled,
         "faceEnabled": bool(raw.get("faceEnabled", True)),
@@ -442,7 +465,9 @@ def normalized_detail_pass(parameters: dict[str, Any]) -> dict[str, Any]:
         ),
         "maxRegions": max(1, min(int(raw.get("maxRegions", 4)), 16)),
         "maskPaddingPx": max(0, min(int(raw.get("maskPaddingPx", 32)), 256)),
-        "detailRenderEdge": max(256, min(int(raw.get("detailRenderEdge", 768)), 1536)),
+        "detailRenderEdge": detail_render_edge,
+        "minRenderWidth": MIN_DETAIL_RENDER_WIDTH,
+        "upscaleBackend": DETAIL_UPSCALE_BACKEND,
         "minCropEdge": max(64, min(int(raw.get("minCropEdge", 256)), 1024)),
         "denoise": denoise,
         "steps": steps,
@@ -469,6 +494,8 @@ def detail_pass_diagnostics(detail_pass: dict[str, Any]) -> dict[str, Any]:
         "maxRegions": detail_pass["maxRegions"],
         "maskPaddingPx": detail_pass["maskPaddingPx"],
         "detailRenderEdge": detail_pass["detailRenderEdge"],
+        "minRenderWidth": detail_pass["minRenderWidth"],
+        "upscaleBackend": detail_pass["upscaleBackend"],
         "minCropEdge": detail_pass["minCropEdge"],
         "denoise": detail_pass["denoise"],
         "steps": detail_pass["steps"],
@@ -2971,6 +2998,37 @@ def expand_box_to_min_edge(
     return (max(0, left), max(0, top), min(width, right), min(height, bottom))
 
 
+def centered_window(center: float, target_size: int, limit: int) -> tuple[int, int]:
+    if target_size >= limit:
+        return (0, limit)
+    start = math.floor(center - target_size / 2.0)
+    end = start + target_size
+    if start < 0:
+        end -= start
+        start = 0
+    if end > limit:
+        start -= end - limit
+        end = limit
+    return (max(0, start), min(limit, end))
+
+
+def expand_box_to_square_min_edge(
+    box: tuple[int, int, int, int],
+    image_size: tuple[int, int],
+    min_edge: int,
+) -> tuple[int, int, int, int]:
+    left, top, right, bottom = box
+    width, height = image_size
+    box_width = max(1, right - left)
+    box_height = max(1, bottom - top)
+    target_edge = max(box_width, box_height, min_edge)
+    center_x = (left + right) / 2.0
+    center_y = (top + bottom) / 2.0
+    crop_left, crop_right = centered_window(center_x, target_edge, width)
+    crop_top, crop_bottom = centered_window(center_y, target_edge, height)
+    return (crop_left, crop_top, crop_right, crop_bottom)
+
+
 def detail_crop_region(
     region_mask: Image.Image,
     image_size: tuple[int, int],
@@ -2979,22 +3037,71 @@ def detail_crop_region(
     bbox = region_mask.getbbox()
     if bbox is None:
         return None
-    return expand_box_to_min_edge(bbox, image_size, min_crop_edge)
+    return expand_box_to_square_min_edge(bbox, image_size, min_crop_edge)
 
 
 def detail_render_size(
     crop_size: tuple[int, int],
     target_edge: int,
+    min_render_width: int = MIN_DETAIL_RENDER_WIDTH,
 ) -> tuple[int, int]:
     width, height = crop_size
     longest = max(width, height)
     if longest <= 0:
         return (8, 8)
-    scale = target_edge / longest
-    return (
+    scale = max(1.0, target_edge / longest, min_render_width / max(1, width))
+    render_size = (
         max(8, round_up(round(width * scale), 8)),
         max(8, round_up(round(height * scale), 8)),
     )
+    if max(render_size) <= MAX_DETAIL_RENDER_EDGE:
+        return render_size
+    cap_scale = MAX_DETAIL_RENDER_EDGE / max(render_size)
+    return (
+        max(8, round_up(round(render_size[0] * cap_scale), 8)),
+        max(8, round_up(round(render_size[1] * cap_scale), 8)),
+    )
+
+
+def detail_enhancing_resize(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+    resized = image.convert("RGB").resize(size, Image.Resampling.LANCZOS)
+    return resized.filter(ImageFilter.UnsharpMask(radius=1.15, percent=125, threshold=2))
+
+
+def detail_enhance_to_min_width(
+    image: Image.Image,
+    min_width: int,
+    max_edge: int = 2048,
+) -> tuple[Image.Image, dict[str, Any]]:
+    source = image.convert("RGB")
+    width, height = source.size
+    report = {
+        "backend": DETAIL_UPSCALE_BACKEND,
+        "inputWidth": width,
+        "inputHeight": height,
+        "outputWidth": width,
+        "outputHeight": height,
+        "applied": False,
+    }
+    if width >= min_width:
+        return source, report
+
+    scale = min_width / max(1, width)
+    target_width = max(min_width, round_up(round(width * scale), 8))
+    target_height = max(8, round_up(round(height * scale), 8))
+    if max(target_width, target_height) > max_edge:
+        cap_scale = max_edge / max(target_width, target_height)
+        target_width = max(8, round_up(round(target_width * cap_scale), 8))
+        target_height = max(8, round_up(round(target_height * cap_scale), 8))
+    report.update(
+        {
+            "outputWidth": target_width,
+            "outputHeight": target_height,
+            "applied": True,
+            "requestedMinWidth": min_width,
+        }
+    )
+    return detail_enhancing_resize(source, (target_width, target_height)), report
 
 
 DETAIL_EXPECTED_CLASSES = {
@@ -3175,6 +3282,8 @@ def run_detail_pass(
             "denoise": detail_pass["denoise"],
             "scheduler": detail_pass["scheduler"],
             "detailRenderEdge": detail_pass["detailRenderEdge"],
+            "minRenderWidth": detail_pass["minRenderWidth"],
+            "upscaleBackend": detail_pass["upscaleBackend"],
             "minCropEdge": detail_pass["minCropEdge"],
         },
     )
@@ -3271,11 +3380,13 @@ def run_detail_pass(
             if crop_width <= 0 or crop_height <= 0:
                 continue
             render_size = detail_render_size(
-                (crop_width, crop_height), detail_pass["detailRenderEdge"]
+                (crop_width, crop_height),
+                detail_pass["detailRenderEdge"],
+                detail_pass["minRenderWidth"],
             )
             source_crop = current.crop(crop_box)
             mask_crop = region_mask.crop(crop_box)
-            source_render = source_crop.resize(render_size, Image.Resampling.LANCZOS)
+            source_render = detail_enhancing_resize(source_crop, render_size)
             mask_render = mask_crop.resize(render_size, Image.Resampling.LANCZOS)
             source_padded, unpadded_size = pad_source_to_multiple(source_render, 8)
             mask_padded = pad_mask_to_size(mask_render, source_padded.size)
@@ -3287,6 +3398,8 @@ def run_detail_pass(
                     "cropHeight": crop_height,
                     "renderWidth": source_padded.width,
                     "renderHeight": source_padded.height,
+                    "minRenderWidth": detail_pass["minRenderWidth"],
+                    "upscaleBackend": detail_pass["upscaleBackend"],
                 }
             )
             detail_effective_steps = effective_diffusion_steps(
@@ -3419,6 +3532,10 @@ def run_refiner_pass(
     device: str,
     candidate_index: int,
 ) -> Image.Image:
+    original_size = image.size
+    refiner_input, upscale_report = detail_enhance_to_min_width(
+        image, int(refiner.get("minRenderWidth", MIN_REFINER_RENDER_WIDTH))
+    )
     effective_steps = effective_diffusion_steps(
         refiner["steps"], refiner["strength"]
     )
@@ -3430,7 +3547,18 @@ def run_refiner_pass(
             "steps": effective_steps,
             "requestedSteps": refiner["steps"],
             "strength": refiner["strength"],
+            "renderWidth": refiner_input.width,
+            "renderHeight": refiner_input.height,
+            "upscaleBackend": upscale_report["backend"],
+            "upscaled": upscale_report["applied"],
         }
+    )
+    debug_event(
+        "refiner-upscale",
+        {
+            "candidate": candidate_index,
+            **upscale_report,
+        },
     )
     last_step = 0
 
@@ -3455,6 +3583,8 @@ def run_refiner_pass(
                     "steps": effective_steps,
                     "requestedSteps": refiner["steps"],
                     "strength": refiner["strength"],
+                    "renderWidth": refiner_input.width,
+                    "renderHeight": refiner_input.height,
                 }
             )
         return callback_kwargs
@@ -3462,7 +3592,7 @@ def run_refiner_pass(
     refined = pipe(
         prompt=prompt,
         negative_prompt=negative_prompt,
-        image=image.convert("RGB"),
+        image=refiner_input,
         strength=refiner["strength"],
         num_inference_steps=refiner["steps"],
         guidance_scale=cfg,
@@ -3479,9 +3609,14 @@ def run_refiner_pass(
             "steps": effective_steps,
             "requestedSteps": refiner["steps"],
             "strength": refiner["strength"],
+            "renderWidth": refiner_input.width,
+            "renderHeight": refiner_input.height,
         }
     )
-    return refined.convert("RGB")
+    refined = refined.convert("RGB")
+    if refined.size != original_size:
+        refined = refined.resize(original_size, Image.Resampling.LANCZOS)
+    return refined
 
 
 def run_gguf_refiner_pass(
@@ -4465,6 +4600,8 @@ def main(argv: list[str]) -> int:
                         "status": "applied",
                         "scheduler": refiner_scheduler_key,
                         "schedulerClass": refiner_scheduler_class,
+                        "upscaleBackend": refiner["upscaleBackend"],
+                        "minRenderWidth": refiner["minRenderWidth"],
                     }
                     refiner_report["appliedCandidates"] += 1
                 refiner_report["status"] = "applied"

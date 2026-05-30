@@ -4669,7 +4669,7 @@ struct DetailPassOptions {
 	double detectionConfidence = 0.5;
 	int maxRegions = 4;
 	int maskPaddingPx = 32;
-	int detailRenderEdge = 768;
+	int detailRenderEdge = 1024;
 	int minCropEdge = 256;
 	double denoise = 0.35;
 	int steps = 28;
@@ -5148,7 +5148,7 @@ DetailPassOptions loadDetailPassOptions()
 		qBound(0.01, options.detectionConfidence, 1.0);
 	options.maxRegions = qBound(1, options.maxRegions, 16);
 	options.maskPaddingPx = qBound(0, options.maskPaddingPx, 256);
-	options.detailRenderEdge = qBound(256, options.detailRenderEdge, 1536);
+	options.detailRenderEdge = qBound(1024, options.detailRenderEdge, 1536);
 	options.minCropEdge = qBound(64, options.minCropEdge, 1024);
 	options.denoise = qBound(0.05, options.denoise, 1.0);
 	options.steps = qBound(1, options.steps, 200);
@@ -5568,7 +5568,7 @@ bool showDetailPassSettingsDialog(QWidget *parent)
 	QFormLayout *cropForm = new QFormLayout(cropGroup);
 	QSlider *detailRenderEdge = nullptr;
 	QWidget *detailRenderEdgeSlider = makeIntSlider(
-		&dialog, 256, 1536, 768,
+		&dialog, 1024, 1536, 1024,
 		[](int v) { return MainWindow::tr("%1 px").arg(v); },
 		detailRenderEdge);
 	QSlider *minCropEdge = nullptr;

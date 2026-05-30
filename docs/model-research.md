@@ -335,13 +335,16 @@ Face/body/hand detailing should not run only at the full candidate image
 resolution. Small detected regions need their own crop/detail pass:
 
 ```text
-detection box -> padded crop -> resize to detail render edge -> inpaint crop
--> resize back -> blend into candidate
+detection box -> padded square crop -> detail-enhancing upscale
+-> inpaint crop at 1024+ px working width -> resize back -> blend into candidate
 ```
 
 The current worker exposes `detailRenderEdge` and `minCropEdge` in
-`detailPass`. The default detail render edge is 768 px, with 1024 px available
-for higher-quality tests on the RTX 4070.
+`detailPass`. Detail rendering should not run below a 1024 px working width.
+The current first-pass backend uses Lanczos upscaling with sharpening as a
+lightweight detail-enhancing pre-pass before diffusion. A model-backed
+Real-ESRGAN lane should replace or augment this once the upscaler worker is
+implemented.
 
 Detailing is detector-gated. The worker should not run a diffusion detail crop
 unless an enabled detector returns at least one valid face/body/hand box after
