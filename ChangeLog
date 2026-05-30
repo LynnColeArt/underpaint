@@ -7,6 +7,7 @@ Unreleased Version 2.3.1-pre
  * Underpaint Feature: Add object decomposition workflows with SAM-style segmentation backends, person/object priors, semantic layer naming/grouping, background remainder layers and optional background repair.
  * Underpaint Feature: Add face/body/hands detail passes with detector-driven crop refinement, plus optional SDXL refiner support that can run before or after detail passes.
  * Underpaint Feature: Add the Proompt Manager dock for searching, reusing and deleting recent inpaint, outpaint and underpaint prompts.
+ * Underpaint Fix: Let detail and refiner passes choose their pre-upscale backend while keeping detected detail crops at a minimum 1024 px working width.
  * Underpaint Fix: Make dragged, pasted and reference image imports use the native Drawdance image loader as a fallback so WEBP and QOI behave consistently even when Qt image plugins are missing or unreliable.
  * Underpaint Fix: Show requested versus effective Diffusers denoising steps for base, refiner and detail stages so high-step renders and low-strength refiner runs are easier to diagnose.
  * Underpaint Documentation: Add public-facing README, Linux install notes and planning docs for the local-first AI restoration direction.

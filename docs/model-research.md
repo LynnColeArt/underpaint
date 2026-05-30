@@ -339,12 +339,14 @@ detection box -> padded square crop -> detail-enhancing upscale
 -> inpaint crop at 1024+ px working width -> resize back -> blend into candidate
 ```
 
-The current worker exposes `detailRenderEdge` and `minCropEdge` in
-`detailPass`. Detail rendering should not run below a 1024 px working width.
-The current first-pass backend uses Lanczos upscaling with sharpening as a
-lightweight detail-enhancing pre-pass before diffusion. A model-backed
-Real-ESRGAN lane should replace or augment this once the upscaler worker is
-implemented.
+The current worker exposes `detailRenderEdge`, `minCropEdge`, and
+`upscaleBackend` in `detailPass`. Refiner settings also carry an
+`upscaleBackend` so small candidate images can be enlarged before the global
+polish pass. Detail rendering should not run below a 1024 px working width.
+The first-pass backend can use either plain Lanczos or Lanczos plus unsharp
+masking as a lightweight detail-enhancing pre-pass before diffusion. A
+model-backed Real-ESRGAN lane should replace or augment this once the upscaler
+worker is implemented.
 
 Detailing is detector-gated. The worker should not run a diffusion detail crop
 unless an enabled detector returns at least one valid face/body/hand box after

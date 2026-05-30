@@ -120,6 +120,7 @@ Suggested controls:
 - max regions
 - crop padding
 - detail render edge
+- detail pre-upscale backend
 - detail strength
 - run after inpaint
 - run after outpaint
@@ -147,6 +148,8 @@ detailer entry.
   `detailRenderEdge` with a 1024 px floor, and reinserts the result at the
   original position.
 - The UI can enable/disable at least face, body, and hand detector slots.
+- The UI can select the detail pre-upscale backend independently of detector
+  selection.
 - Candidate provenance records detector id, confidence threshold, region count,
   crop size, and detail render edge.
 - Missing detector models fail clearly and do not break base inpaint/outpaint.

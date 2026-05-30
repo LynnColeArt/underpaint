@@ -39,7 +39,11 @@ DETAIL_MODEL_FILENAMES = {
     "body": "person_yolov8n-seg.pt",
     "hands": "hand_yolov8n.pt",
 }
-DETAIL_UPSCALE_BACKEND = "pil-lanczos-unsharp"
+DEFAULT_DETAIL_UPSCALE_BACKEND = "pil-lanczos-unsharp"
+DETAIL_UPSCALE_BACKENDS = {
+    "pil-lanczos",
+    "pil-lanczos-unsharp",
+}
 MIN_DETAIL_RENDER_WIDTH = 1024
 MAX_DETAIL_RENDER_EDGE = 1536
 MIN_REFINER_RENDER_WIDTH = 1024
@@ -55,6 +59,20 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_detail_upscale_backend(value: Any = None) -> str:
+    configured = (
+        os.environ.get("UNDERPAINT_DETAIL_UPSCALE_BACKEND")
+        or str(value or "")
+    ).strip().lower()
+    if configured in {"lanczos", "pil", "resize"}:
+        return "pil-lanczos"
+    if configured in {"sharp", "sharpen", "unsharp", "lanczos-unsharp"}:
+        return "pil-lanczos-unsharp"
+    if configured in DETAIL_UPSCALE_BACKENDS:
+        return configured
+    return DEFAULT_DETAIL_UPSCALE_BACKEND
 
 
 def configure_debug_logging(job_dir: Path) -> None:
@@ -409,6 +427,7 @@ def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
             2048,
         ),
     )
+    upscale_backend = normalize_detail_upscale_backend(raw.get("upscaleBackend"))
     return {
         "enabled": bool(raw.get("enabled", False)),
         "modelId": model_id,
@@ -422,7 +441,7 @@ def normalized_refiner(parameters: dict[str, Any]) -> dict[str, Any]:
         "placement": placement,
         "runner": str(os.environ.get("UNDERPAINT_GGUF_REFINER_WORKER", "")).strip(),
         "minRenderWidth": min_render_width,
-        "upscaleBackend": DETAIL_UPSCALE_BACKEND,
+        "upscaleBackend": upscale_backend,
     }
 
 
@@ -455,6 +474,7 @@ def normalized_detail_pass(parameters: dict[str, Any]) -> dict[str, Any]:
         MIN_DETAIL_RENDER_WIDTH,
         min(int(raw.get("detailRenderEdge", MIN_DETAIL_RENDER_WIDTH)), MAX_DETAIL_RENDER_EDGE),
     )
+    upscale_backend = normalize_detail_upscale_backend(raw.get("upscaleBackend"))
     return {
         "enabled": enabled,
         "faceEnabled": bool(raw.get("faceEnabled", True)),
@@ -467,7 +487,7 @@ def normalized_detail_pass(parameters: dict[str, Any]) -> dict[str, Any]:
         "maskPaddingPx": max(0, min(int(raw.get("maskPaddingPx", 32)), 256)),
         "detailRenderEdge": detail_render_edge,
         "minRenderWidth": MIN_DETAIL_RENDER_WIDTH,
-        "upscaleBackend": DETAIL_UPSCALE_BACKEND,
+        "upscaleBackend": upscale_backend,
         "minCropEdge": max(64, min(int(raw.get("minCropEdge", 256)), 1024)),
         "denoise": denoise,
         "steps": steps,
@@ -3063,20 +3083,28 @@ def detail_render_size(
     )
 
 
-def detail_enhancing_resize(image: Image.Image, size: tuple[int, int]) -> Image.Image:
+def detail_enhancing_resize(
+    image: Image.Image,
+    size: tuple[int, int],
+    backend: str = DEFAULT_DETAIL_UPSCALE_BACKEND,
+) -> Image.Image:
     resized = image.convert("RGB").resize(size, Image.Resampling.LANCZOS)
-    return resized.filter(ImageFilter.UnsharpMask(radius=1.15, percent=125, threshold=2))
+    if normalize_detail_upscale_backend(backend) == "pil-lanczos-unsharp":
+        return resized.filter(ImageFilter.UnsharpMask(radius=1.15, percent=125, threshold=2))
+    return resized
 
 
 def detail_enhance_to_min_width(
     image: Image.Image,
     min_width: int,
+    backend: str = DEFAULT_DETAIL_UPSCALE_BACKEND,
     max_edge: int = 2048,
 ) -> tuple[Image.Image, dict[str, Any]]:
     source = image.convert("RGB")
+    backend = normalize_detail_upscale_backend(backend)
     width, height = source.size
     report = {
-        "backend": DETAIL_UPSCALE_BACKEND,
+        "backend": backend,
         "inputWidth": width,
         "inputHeight": height,
         "outputWidth": width,
@@ -3101,7 +3129,7 @@ def detail_enhance_to_min_width(
             "requestedMinWidth": min_width,
         }
     )
-    return detail_enhancing_resize(source, (target_width, target_height)), report
+    return detail_enhancing_resize(source, (target_width, target_height), backend), report
 
 
 DETAIL_EXPECTED_CLASSES = {
@@ -3386,7 +3414,9 @@ def run_detail_pass(
             )
             source_crop = current.crop(crop_box)
             mask_crop = region_mask.crop(crop_box)
-            source_render = detail_enhancing_resize(source_crop, render_size)
+            source_render = detail_enhancing_resize(
+                source_crop, render_size, detail_pass["upscaleBackend"]
+            )
             mask_render = mask_crop.resize(render_size, Image.Resampling.LANCZOS)
             source_padded, unpadded_size = pad_source_to_multiple(source_render, 8)
             mask_padded = pad_mask_to_size(mask_render, source_padded.size)
@@ -3534,7 +3564,9 @@ def run_refiner_pass(
 ) -> Image.Image:
     original_size = image.size
     refiner_input, upscale_report = detail_enhance_to_min_width(
-        image, int(refiner.get("minRenderWidth", MIN_REFINER_RENDER_WIDTH))
+        image,
+        int(refiner.get("minRenderWidth", MIN_REFINER_RENDER_WIDTH)),
+        str(refiner.get("upscaleBackend", DEFAULT_DETAIL_UPSCALE_BACKEND)),
     )
     effective_steps = effective_diffusion_steps(
         refiner["steps"], refiner["strength"]

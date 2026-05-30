@@ -4650,6 +4650,7 @@ struct RefinerOptions {
 	bool inheritSampler = true;
 	QString scheduler = QStringLiteral("dpmpp-3m-karras");
 	QString placement = QStringLiteral("before-detail");
+	QString upscaleBackend = QStringLiteral("pil-lanczos-unsharp");
 };
 
 struct AiRegistryModel {
@@ -4675,6 +4676,7 @@ struct DetailPassOptions {
 	int steps = 28;
 	bool inheritSampler = true;
 	QString scheduler = QStringLiteral("dpmpp-3m-karras");
+	QString upscaleBackend = QStringLiteral("pil-lanczos-unsharp");
 };
 
 struct ColorSeparationOptions {
@@ -4994,6 +4996,28 @@ QString refinerPlacementLabel(const QString &placement)
 			   : MainWindow::tr("before detailer");
 }
 
+QString normalizeDetailUpscaleBackend(const QString &backend)
+{
+	return backend == QStringLiteral("pil-lanczos")
+			   ? QStringLiteral("pil-lanczos")
+			   : QStringLiteral("pil-lanczos-unsharp");
+}
+
+QString detailUpscaleBackendLabel(const QString &backend)
+{
+	return normalizeDetailUpscaleBackend(backend) == QStringLiteral("pil-lanczos")
+			   ? MainWindow::tr("Lanczos")
+			   : MainWindow::tr("Lanczos + sharpen");
+}
+
+void addDetailUpscaleBackendChoices(QComboBox *backend)
+{
+	backend->addItem(
+		MainWindow::tr("Lanczos + sharpen"),
+		QStringLiteral("pil-lanczos-unsharp"));
+	backend->addItem(MainWindow::tr("Lanczos"), QStringLiteral("pil-lanczos"));
+}
+
 RefinerOptions loadRefinerOptions()
 {
 	RefinerOptions defaults = defaultRefinerOptions();
@@ -5019,6 +5043,11 @@ RefinerOptions loadRefinerOptions()
 		settings.value(QStringLiteral("scheduler"), defaults.scheduler).toString();
 	options.placement = normalizeRefinerPlacement(
 		settings.value(QStringLiteral("placement"), defaults.placement).toString());
+	options.upscaleBackend = normalizeDetailUpscaleBackend(
+		settings.value(
+					QStringLiteral("upscaleBackend"),
+					defaults.upscaleBackend)
+			.toString());
 	settings.endGroup();
 
 	if(options.model.trimmed().isEmpty()) {
@@ -5059,6 +5088,9 @@ void saveRefinerOptions(const RefinerOptions &options)
 	settings.setValue(QStringLiteral("scheduler"), options.scheduler);
 	settings.setValue(
 		QStringLiteral("placement"), normalizeRefinerPlacement(options.placement));
+	settings.setValue(
+		QStringLiteral("upscaleBackend"),
+		normalizeDetailUpscaleBackend(options.upscaleBackend));
 	settings.endGroup();
 }
 
@@ -5066,13 +5098,14 @@ QString refinerSummary(const RefinerOptions &options)
 {
 	return options.enabled
 			   ? MainWindow::tr(
-					 "On: %1 via %2, strength %3, %4 steps (~%5 effective), %6")
+					 "On: %1 via %2, strength %3, %4 steps (~%5 effective), %6, %7 pre-upscale")
 					 .arg(options.model)
 					 .arg(options.backend)
 					 .arg(options.strength, 0, 'f', 2)
 					 .arg(options.steps)
 					 .arg(effectiveDiffusionSteps(options.steps, options.strength))
 					 .arg(refinerPlacementLabel(options.placement))
+					 .arg(detailUpscaleBackendLabel(options.upscaleBackend))
 			   : MainWindow::tr("Off");
 }
 
@@ -5142,6 +5175,11 @@ DetailPassOptions loadDetailPassOptions()
 			.toBool();
 	options.scheduler =
 		settings.value(QStringLiteral("scheduler"), defaults.scheduler).toString();
+	options.upscaleBackend = normalizeDetailUpscaleBackend(
+		settings.value(
+					QStringLiteral("upscaleBackend"),
+					defaults.upscaleBackend)
+			.toString());
 	settings.endGroup();
 
 	options.detectionConfidence =
@@ -5176,6 +5214,9 @@ void saveDetailPassOptions(const DetailPassOptions &options)
 	settings.setValue(QStringLiteral("steps"), options.steps);
 	settings.setValue(QStringLiteral("inheritSampler"), options.inheritSampler);
 	settings.setValue(QStringLiteral("scheduler"), options.scheduler);
+	settings.setValue(
+		QStringLiteral("upscaleBackend"),
+		normalizeDetailUpscaleBackend(options.upscaleBackend));
 	settings.endGroup();
 }
 
@@ -5204,11 +5245,12 @@ QString detailPassSummary(const DetailPassOptions &options)
 	return enabledParts.isEmpty()
 			   ? MainWindow::tr("On, no regions enabled")
 			   : MainWindow::tr(
-					 "On: %1, %2 px detail edge, %3 steps (~%4 effective)")
+					 "On: %1, %2 px detail edge, %3 steps (~%4 effective), %5 pre-upscale")
 					 .arg(enabledParts.join(QStringLiteral(", ")))
 					 .arg(options.detailRenderEdge)
 					 .arg(options.steps)
-					 .arg(effectiveDiffusionSteps(options.steps, options.denoise));
+					 .arg(effectiveDiffusionSteps(options.steps, options.denoise))
+					 .arg(detailUpscaleBackendLabel(options.upscaleBackend));
 }
 
 void addSchedulerChoices(QComboBox *scheduler)
@@ -5343,6 +5385,8 @@ QJsonObject refinerParameters(bool enabled, const QString &jobScheduler)
 		{QStringLiteral("scheduler"), scheduler},
 		{QStringLiteral("inheritSampler"), options.inheritSampler},
 		{QStringLiteral("placement"), normalizeRefinerPlacement(options.placement)},
+		{QStringLiteral("upscaleBackend"),
+		 normalizeDetailUpscaleBackend(options.upscaleBackend)},
 	};
 }
 
@@ -5365,6 +5409,8 @@ QJsonObject detailPassParameters(bool enabled, const QString &jobScheduler)
 		{QStringLiteral("steps"), options.steps},
 		{QStringLiteral("scheduler"), scheduler},
 		{QStringLiteral("inheritSampler"), options.inheritSampler},
+		{QStringLiteral("upscaleBackend"),
+		 normalizeDetailUpscaleBackend(options.upscaleBackend)},
 		{QStringLiteral("fallbackToEditMask"), false},
 	};
 }
@@ -5434,11 +5480,17 @@ bool showRefinerSettingsDialog(QWidget *parent)
 	placement->setToolTip(MainWindow::tr(
 		"Before detailer keeps detected faces, bodies, and hands as the final "
 		"targeted pass. After detailer applies one final whole-image polish."));
+	QComboBox *upscaleBackend = new QComboBox(generationGroup);
+	addDetailUpscaleBackendChoices(upscaleBackend);
+	upscaleBackend->setToolTip(MainWindow::tr(
+		"Upscale candidates before the refiner runs. This keeps small refiner "
+		"inputs from being polished at visibly low resolution."));
 	generationForm->addRow(MainWindow::tr("Strength"), strengthSlider);
 	generationForm->addRow(MainWindow::tr("Steps"), stepsSlider);
 	generationForm->addRow(QString(), inheritSampler);
 	generationForm->addRow(MainWindow::tr("Sampler"), scheduler);
 	generationForm->addRow(MainWindow::tr("Run order"), placement);
+	generationForm->addRow(MainWindow::tr("Pre-upscale"), upscaleBackend);
 	layout->addWidget(generationGroup);
 
 	auto applyOptionsToControls = [&] (const RefinerOptions &options) {
@@ -5456,6 +5508,9 @@ bool showRefinerSettingsDialog(QWidget *parent)
 		const int placementIndex =
 			placement->findData(normalizeRefinerPlacement(options.placement));
 		placement->setCurrentIndex(placementIndex >= 0 ? placementIndex : 0);
+		const int upscaleIndex = upscaleBackend->findData(
+			normalizeDetailUpscaleBackend(options.upscaleBackend));
+		upscaleBackend->setCurrentIndex(upscaleIndex >= 0 ? upscaleIndex : 0);
 	};
 
 	QObject::connect(
@@ -5507,6 +5562,8 @@ bool showRefinerSettingsDialog(QWidget *parent)
 	options.inheritSampler = inheritSampler->isChecked();
 	options.scheduler = scheduler->currentData().toString();
 	options.placement = normalizeRefinerPlacement(placement->currentData().toString());
+	options.upscaleBackend =
+		normalizeDetailUpscaleBackend(upscaleBackend->currentData().toString());
 	saveRefinerOptions(options);
 	return true;
 }
@@ -5575,8 +5632,14 @@ bool showDetailPassSettingsDialog(QWidget *parent)
 	QWidget *minCropEdgeSlider = makeIntSlider(
 		&dialog, 64, 1024, 256,
 		[](int v) { return MainWindow::tr("%1 px").arg(v); }, minCropEdge);
+	QComboBox *upscaleBackend = new QComboBox(cropGroup);
+	addDetailUpscaleBackendChoices(upscaleBackend);
+	upscaleBackend->setToolTip(MainWindow::tr(
+		"Upscale each detected crop before its diffusion detail pass. The crop "
+		"will still render at a minimum 1024 px working width."));
 	cropForm->addRow(MainWindow::tr("Render edge"), detailRenderEdgeSlider);
 	cropForm->addRow(MainWindow::tr("Minimum crop"), minCropEdgeSlider);
+	cropForm->addRow(MainWindow::tr("Pre-upscale"), upscaleBackend);
 	layout->addWidget(cropGroup);
 
 	QGroupBox *generationGroup =
@@ -5609,6 +5672,9 @@ bool showDetailPassSettingsDialog(QWidget *parent)
 		padding->setValue(options.maskPaddingPx);
 		detailRenderEdge->setValue(options.detailRenderEdge);
 		minCropEdge->setValue(options.minCropEdge);
+		const int upscaleIndex = upscaleBackend->findData(
+			normalizeDetailUpscaleBackend(options.upscaleBackend));
+		upscaleBackend->setCurrentIndex(upscaleIndex >= 0 ? upscaleIndex : 0);
 		denoise->setValue(qRound(options.denoise * 100.0));
 		steps->setValue(options.steps);
 		inheritSampler->setChecked(options.inheritSampler);
@@ -5646,6 +5712,8 @@ bool showDetailPassSettingsDialog(QWidget *parent)
 	options.maskPaddingPx = padding->value();
 	options.detailRenderEdge = detailRenderEdge->value();
 	options.minCropEdge = minCropEdge->value();
+	options.upscaleBackend =
+		normalizeDetailUpscaleBackend(upscaleBackend->currentData().toString());
 	options.denoise = denoise->value() / 100.0;
 	options.steps = steps->value();
 	options.inheritSampler = inheritSampler->isChecked();
