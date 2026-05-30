@@ -128,6 +128,13 @@ For each proposed target, it should return:
 The helper may also return coarse boxes or points when it can estimate them.
 Those hints should be treated as prompts, not truth.
 
+A dedicated semantic locator can also fill this role. For example,
+LocateAnything-style grounding can receive the helper's target phrase and return
+candidate boxes or points. Semantic Peel can then pass those proposals into a
+SAM-family mask backend, followed by Underpaint cleanup and matting. This keeps
+the loop promptable without assuming the grounding model can produce final
+artist-quality masks by itself.
+
 The helper should prefer targets that are:
 
 - visually distinct

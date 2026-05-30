@@ -71,6 +71,8 @@ Primary candidates:
 
 - Grounded SAM 2 with Grounding DINO, Florence-2, or a similar grounding model.
 - Florence-style region captioning as a companion path for naming and grouping.
+- NVIDIA LocateAnything-3B as a semantic locator that can produce text-driven
+  boxes or points before a promptable mask backend performs the actual cut.
 
 This lane should power workflows like:
 
@@ -81,6 +83,24 @@ This lane should power workflows like:
 
 Text-directed segmentation should still return normal Underpaint masks and
 layers. It should not become a separate product mode.
+
+LocateAnything-style locators should be treated as box and point proposal
+engines, not as final segmentation engines. Their output can make Semantic Peel
+and targeted decomposition less random by answering "where is this thing?"
+before Underpaint asks SAM-style segmentation and matting backends to produce a
+usable alpha cutout.
+
+LocateAnything-3B is research-only under NVIDIA's non-commercial license, so it
+can be evaluated in local experiments but should not be bundled, recommended
+for commercial use, or made part of a production default until licensing is
+resolved.
+
+Community conversions exist, including ONNX/WebGPU INT4 and MLX variants, but
+they are still derived from the same LocateAnything-3B source model. Treat those
+as runtime experiments, not as a licensing escape hatch. If a conversion claims
+a permissive license while also pointing back to NVIDIA's original model
+license, the original model-license restriction still needs review before
+shipping.
 
 ### Fast Preview
 
@@ -284,6 +304,10 @@ skipped until their runtimes are wired and their licenses are reviewed.
   now has HQ-SAM 2 checkpoints.
 - Grounded SAM 2 combines SAM 2 with grounding models such as Grounding DINO and
   Florence-2 for open-set and text-directed segmentation.
+- NVIDIA LocateAnything-3B is a 3B-parameter VLM for visual grounding. It
+  returns structured coordinate text with boxes or points, supports dense object
+  detection and referring-expression grounding, and is licensed for academic and
+  non-profit research only.
 - SEEM supports multiple prompt types, including clicks, strokes, text, and
   referring images.
 - EfficientSAM targets lighter-weight segment-anything behavior.
@@ -295,6 +319,9 @@ References:
 - https://ai.meta.com/research/sam2/
 - https://github.com/SysCV/sam-hq
 - https://github.com/IDEA-Research/Grounded-SAM-2
+- https://huggingface.co/nvidia/LocateAnything-3B
+- https://github.com/NVlabs/Eagle/tree/main/Embodied
+- https://arxiv.org/abs/2605.27365
 - https://github.com/UX-Decoder/Segment-Everything-Everywhere-All-At-Once
 - https://yformer.github.io/efficient-sam/
 - https://docs.ultralytics.com/models/fast-sam
