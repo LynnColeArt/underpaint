@@ -186,7 +186,7 @@ this kind of fork possible in the first place.
 
 ## Project Docs
 
-Underpaint planning docs live in `docs/`:
+Underpaint planning and contributor docs include:
 
 - [Underpaint Thesis](docs/underpaint-thesis.md)
 - [Project Plan](docs/project-plan.md)
@@ -197,6 +197,7 @@ Underpaint planning docs live in `docs/`:
 - [Model Research](docs/model-research.md)
 - [Build Baseline](docs/build-baseline.md)
 - [Rebrand Plan](docs/rebrand-plan.md)
+- [Contribution Guide](CONTRIBUTING.md)
 
 Inherited Drawpile docs are kept under `docs/drawpile/`.
 
