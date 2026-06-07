@@ -1,8 +1,8 @@
 # Underpaint Agent Notes
 
-This repo is the Underpaint fork of Drawpile. Preserve Drawpile provenance and
-collaboration/session behavior while moving the public product surface toward a
-local-first AI-assisted photo restoration workspace.
+This repo is the Underpaint workspace. Preserve collaboration/session behavior
+while moving the public product surface toward a local-first AI-assisted photo
+restoration workspace.
 
 ## Current Direction
 
@@ -119,7 +119,7 @@ clicking a candidate previews it by toggling the imported candidate layers'
 local visibility, and "Use Candidate" leaves the selected layer visible.
 
 Selection masks must be exported from the selection alpha channel, not from RGB
-luminance. Drawpile rectangular selection masks can be black RGB with fully
+luminance. Rectangular selection masks can be black RGB with fully
 opaque alpha; treating luminance as the inpaint mask makes Diffusers repaint
 nothing and returns candidates that look like the original crop. The editor now
 writes an explicit grayscale alpha mask, and the worker defensively treats
@@ -160,7 +160,8 @@ tools/ai/run-underpaint-juggernaut-x.sh
 
 ```bash
 .venv/bin/python -m py_compile tools/ai/underpaint-diffusers-worker.py
-ninja -C build-qt5-client-baseline drawpile underpaint-ai-worker-stub
+cmake --build build-qt5-client-baseline --target underpaint-ai-worker-stub
+cmake --build build-qt5-client-baseline
 git diff --check
 ```
 
