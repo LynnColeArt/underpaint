@@ -11,12 +11,14 @@ extern "C" {
 #include <dpimpex/save.h>
 }
 
+#include <QBuffer>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QImage>
-#include <QSize>
 #include <QImageReader>
 #include <QImageWriter>
-#include <QGuiApplication>
+#include <QMimeData>
+#include <QSize>
 
 namespace utils {
 
@@ -123,11 +125,100 @@ static QImage loadImageWithDrawdance(const QString &path, QString &outError)
 	}
 }
 
+static bool isEncodedImageMimeFormat(const QString &format)
+{
+	return format.startsWith(QStringLiteral("image/"), Qt::CaseInsensitive);
+}
+
+static QImage loadImageFromEncodedData(
+	const QByteArray &bytes, QString &outError)
+{
+	if(bytes.isEmpty()) {
+		outError = QStringLiteral("Image data is empty.");
+		return QImage{};
+	}
+
+	QBuffer buffer;
+	buffer.setData(bytes);
+	if(!buffer.open(QIODevice::ReadOnly)) {
+		outError = QStringLiteral("Could not open image data.");
+		return QImage{};
+	}
+
+	QImage img;
+	QImageReader reader(&buffer);
+	reader.setDecideFormatFromContent(true);
+	if(reader.read(&img) && !img.isNull()) {
+		outError.clear();
+		return img;
+	} else {
+		outError = reader.errorString();
+		return QImage{};
+	}
+}
+
 bool isLoadableImageFileSuffix(const QString &suffix)
 {
 	return QImageReader::supportedImageFormats().contains(
 			   normalizedSuffix(suffix).toUtf8()) ||
 		   suffixMatchesPatternList(suffix, cmake_config::file_group::flatImage());
+}
+
+bool mimeDataHasLoadableImage(const QMimeData *mimeData)
+{
+	if(mimeData) {
+		if(mimeData->hasImage()) {
+			return true;
+		}
+		for(const QString &format : mimeData->formats()) {
+			if(isEncodedImageMimeFormat(format)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+QImage loadImageFromMimeData(const QMimeData *mimeData, QString *outError)
+{
+	if(mimeData) {
+		if(mimeData->hasImage()) {
+			QImage img = mimeData->imageData().value<QImage>();
+			if(!img.isNull()) {
+				if(outError) {
+					outError->clear();
+				}
+				return img;
+			}
+		}
+
+		QString fallbackError;
+		for(const QString &format : mimeData->formats()) {
+			if(isEncodedImageMimeFormat(format)) {
+				QString error;
+				QImage img = loadImageFromEncodedData(
+					mimeData->data(format), error);
+				if(!img.isNull()) {
+					if(outError) {
+						outError->clear();
+					}
+					return img;
+				} else {
+					fallbackError = error;
+				}
+			}
+		}
+
+		if(outError) {
+			*outError =
+				fallbackError.isEmpty()
+					? QStringLiteral("No loadable image data found.")
+					: fallbackError;
+		}
+	} else if(outError) {
+		*outError = QStringLiteral("No image data found.");
+	}
+	return QImage{};
 }
 
 QImage loadImageFromFile(const QString &path, QString *outError)

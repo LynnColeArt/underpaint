@@ -2323,25 +2323,12 @@ const QMimeData *Document::getClipboardData()
 
 bool Document::clipboardHasImageData()
 {
-	const QMimeData *mimeData = getClipboardData();
-	return mimeData && (mimeData->hasImage() ||
-						mimeData->hasFormat(QStringLiteral("image/png")));
+	return utils::mimeDataHasLoadableImage(getClipboardData());
 }
 
 QImage Document::getClipboardImageData(const QMimeData *mimeData)
 {
-	if(mimeData) {
-		if(mimeData->hasImage()) {
-			return mimeData->imageData().value<QImage>();
-		} else if(mimeData->hasFormat(QStringLiteral("image/png"))) {
-			QImage img;
-			if(img.loadFromData(
-				   mimeData->data(QStringLiteral("image/png")), "PNG")) {
-				return img;
-			}
-		}
-	}
-	return QImage();
+	return utils::loadImageFromMimeData(mimeData);
 }
 
 void Document::onThumbnailQueried(const QString &payload)

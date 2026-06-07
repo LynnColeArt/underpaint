@@ -395,12 +395,23 @@ void ReferenceView::dropEvent(QDropEvent *event)
 {
 	const QMimeData *mimeData = event->mimeData();
 	if(canHandleDrop(mimeData)) {
-		if(mimeData->hasImage()) {
-			emit imageDropped(mimeData->imageData().value<QImage>());
-		} else if(mimeData->hasUrls()) {
-			emit pathDropped(mimeData->urls().first().toLocalFile());
+		if(mimeData->hasUrls() && !mimeData->urls().isEmpty()) {
+			QUrl url = mimeData->urls().first();
+			if(url.isLocalFile()) {
+				const QString path = url.toLocalFile();
+				if(utils::isLoadableImageFileSuffix(QFileInfo(path).suffix())) {
+					emit pathDropped(path);
+					event->acceptProposedAction();
+					return;
+				}
+			}
 		}
-		event->acceptProposedAction();
+
+		QImage img = utils::loadImageFromMimeData(mimeData);
+		if(!img.isNull()) {
+			emit imageDropped(img);
+			event->acceptProposedAction();
+		}
 	}
 }
 
@@ -430,9 +441,7 @@ void ReferenceView::pickColorAt(const QPointF &posf)
 bool ReferenceView::canHandleDrop(const QMimeData *mimeData)
 {
 	if(mimeData) {
-		if(mimeData->hasImage()) {
-			return true;
-		} else if(mimeData->hasUrls() && !mimeData->urls().isEmpty()) {
+		if(mimeData->hasUrls() && !mimeData->urls().isEmpty()) {
 			QUrl url = mimeData->urls().first();
 			if(url.isLocalFile()) {
 				QFileInfo info(url.toLocalFile());
@@ -441,6 +450,7 @@ bool ReferenceView::canHandleDrop(const QMimeData *mimeData)
 				}
 			}
 		}
+		return utils::mimeDataHasLoadableImage(mimeData);
 	}
 	return false;
 }

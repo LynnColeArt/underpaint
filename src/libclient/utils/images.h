@@ -6,6 +6,7 @@
 class QSize;
 class QImage;
 class QColor;
+class QMimeData;
 class QString;
 
 #include <QVector>
@@ -60,6 +61,9 @@ Q_DECLARE_OPERATORS_FOR_FLAGS(FileFormatOptions)
 QStringList fileFormatFilterList(FileFormatOptions formats);
 QImage loadImageFromFile(const QString &path, QString *outError = nullptr);
 bool isLoadableImageFileSuffix(const QString &suffix);
+bool mimeDataHasLoadableImage(const QMimeData *mimeData);
+QImage loadImageFromMimeData(
+	const QMimeData *mimeData, QString *outError = nullptr);
 
 }
 
