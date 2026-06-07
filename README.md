@@ -1,10 +1,10 @@
 # Underpaint
 
-Underpaint is an experimental GPLv3 fork of [Drawpile](https://github.com/drawpile/Drawpile) building a local-first AI photo restoration, object removal, and image reconstruction workspace.
+Underpaint is an experimental GPLv3 local-first AI photo restoration, object removal, and image reconstruction workspace.
 
 The short version: Underpaint treats AI output as art-tool material. Model results should become editable layers, masks, guide maps, regions, candidates, and provenance instead of disappearing behind a prompt box or a cloud service.
 
-Underpaint is early. The current codebase is still mostly Drawpile, and that is intentional while the fork is being established. Drawpile already has a serious collaborative paint editor foundation: canvas state, layers, masks, selections, transforms, import/export, project recordings, session history, chat, permissions, server hosting, and reconnect behavior. Those systems are useful raw material for an AI restoration tool where generated work should become inspectable, editable artifacts.
+Underpaint is early. The current codebase is being reshaped around a restoration-first workflow while keeping the editor foundation useful: canvas state, layers, masks, selections, transforms, import/export, project recordings, session history, chat, permissions, server hosting, and reconnect behavior. Those systems are useful raw material for an AI restoration tool where generated work should become inspectable, editable artifacts.
 
 ## Mission
 
@@ -13,8 +13,7 @@ Underpaint exists to explore a few connected problems:
 - **Local-first AI art tools.** Many AI art workflows are cloud-first by default. Underpaint may eventually support cloud rendering and storage providers, but it is not designed as a cloud system. It is designed for users to run, inspect, modify, and own.
 - **Privacy and ownership matter.** Underpaint should not depend on invasive telemetry or opaque hosted pipelines. We believe artists should be able to own their AI tools at the edge, keep sensitive images local, and decide when a cloud provider is involved.
 - **AI should feel like an art tool.** Too many AI image systems treat the artwork as a prompt result. Underpaint starts from art-tool concepts: layers, masks, selections, brushes, candidates, guides, undo, provenance, and manual control.
-- **Drawpile compatibility matters, but Underpaint is separate.** Underpaint is not associated with Drawpile and has a different mission. Drawpile remains upstream so provenance is clear and so Drawpile can adopt any useful changes if they want them.
-- **Collaboration should be preserved without brand confusion.** Where possible, Underpaint will preserve compatibility with Drawpile's collaboration features and workflows while developing its own product identity.
+- **Collaboration should be preserved without brand confusion.** Where possible, Underpaint will preserve collaborative workflows while developing its own product identity.
 
 ## What Works Today
 
@@ -93,7 +92,7 @@ cmake -S . -B build-qt5-client-baseline -G Ninja \
   -DUPDATE_TRANSLATIONS=OFF \
   -DUSE_GENERATORS=OFF
 
-cmake --build build-qt5-client-baseline --target drawpile
+cmake --build build-qt5-client-baseline
 ```
 
 Set up the Python worker environment:
@@ -140,7 +139,7 @@ Many AI image workflows either hide too much behind a single prompt or expose to
 - **Scene decomposition matters.** Underpaint's "magic layers" idea is not about finding fonts or design assets. It is about separating the image into meaningful visual regions and repairing what sits behind them.
 - **Decomposition should be iterative.** The long-term target is Semantic Peel: identify one meaningful object, cut it into an editable layer, repair the plate behind it, record the decision, and repeat.
 - **Outpaint is intentional.** Expanding a canvas should create space, not automatically invent pixels. Outpaint should be a user-initiated region operation beside inpaint.
-- **Collaboration stays strategic.** Drawpile's collaborative substrate may become useful for shared restoration sessions, cloud rendering workers, agent participants, provenance, and review workflows.
+- **Collaboration stays strategic.** Shared restoration sessions, cloud rendering workers, agent participants, provenance, and review workflows remain important long-term design areas.
 - **Small, high-quality models are preferred.** The local target is RTX 4070-class hardware, so model choice, tiling, crop size, model swapping, and VRAM scheduling are core design concerns.
 
 ## Current Direction
@@ -168,21 +167,11 @@ Planned AI capabilities include:
 - optional cloud rendering/storage providers
 - future MCP/agent control through scoped, undoable domain operations
 
-## Why Drawpile?
-
-Underpaint starts from Drawpile because Drawpile already solves hard editor and
-collaboration problems that are useful for this experiment: layered canvas
-state, networked sessions, reconnect behavior, chat, permissions, history,
-import/export, project recordings, and a mature C++/Qt desktop surface.
-
-That does not make Underpaint a Drawpile product. Underpaint is an independent
-fork with a different goal: local-first AI-assisted restoration and image
-reconstruction. Drawpile remains upstream for license clarity, provenance, and
-potential upstream collaboration.
+## Project Values
 
 The license is not changing. Underpaint remains GPLv3 because the project is
 firmly committed to open source, user freedom, and the copyleft values that made
-this kind of fork possible in the first place.
+this kind of work possible in the first place.
 
 ## Project Docs
 
@@ -198,8 +187,7 @@ Underpaint planning and contributor docs include:
 - [Build Baseline](docs/build-baseline.md)
 - [Rebrand Plan](docs/rebrand-plan.md)
 - [Contribution Guide](CONTRIBUTING.md)
-
-Inherited Drawpile docs are kept under `docs/drawpile/`.
+- [Test Coverage Plan](docs/test-coverage-plan.md)
 
 ## Build Status
 
@@ -210,30 +198,17 @@ The fork currently has verified Qt5 Linux baselines for:
 
 See [docs/build-baseline.md](docs/build-baseline.md) for exact configure/build commands and package notes.
 
-The latest verified client smoke check was:
+The latest verified client smoke path was:
 
 ```bash
-./build-qt5-client-baseline/bin/drawpile --version
-./build-qt5-client-baseline/bin/drawpile --help
+tools/ai/run-underpaint.sh
 ```
 
 Qt6 is deferred until there is a concrete product or packaging reason to prioritize it.
 
-## Upstream Drawpile
-
-Underpaint is derived from Drawpile, a collaborative drawing program that lets people draw, paint, and animate together on the same canvas. Drawpile runs on Windows, Linux, macOS, and Android.
-
-Original upstream:
-
-- Drawpile repository: <https://github.com/drawpile/Drawpile>
-- Drawpile website: <https://drawpile.net/>
-- Drawpile build docs: <https://docs.drawpile.net/help/development/buildingfromsource>
-
-This fork keeps Drawpile provenance visible while exploring a different product direction.
-
 ## License
 
-Underpaint is based on Drawpile and remains under GPLv3. See [LICENSE.txt](LICENSE.txt).
+Underpaint remains under GPLv3. See [LICENSE.txt](LICENSE.txt).
 
 Model weights and AI providers have their own licenses. Underpaint tracks model license and commercial-use status as a first-class model-manager concern.
 
