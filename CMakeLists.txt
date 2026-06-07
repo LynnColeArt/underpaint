@@ -259,6 +259,17 @@ if(SERVER)
 	add_subdirectory(src/thinsrv)
 endif()
 
+if(TESTS AND UNIX AND NOT APPLE AND NOT ANDROID AND NOT EMSCRIPTEN)
+	add_test(
+		NAME underpaint_python_worker
+		COMMAND
+			"${CMAKE_CURRENT_LIST_DIR}/tools/ai/run-underpaint-python-unit-tests.sh"
+		WORKING_DIRECTORY "${CMAKE_CURRENT_LIST_DIR}"
+	)
+	set_tests_properties(
+		underpaint_python_worker PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+
 if(TOOLS)
 	message(STATUS "Adding tools")
 	add_subdirectory(src/tools)

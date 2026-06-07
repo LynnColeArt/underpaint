@@ -38,7 +38,7 @@ def normalize_prompt(text: str) -> str:
     lower = text.lower()
     for prefix in prefixes:
         if lower.startswith(prefix):
-            return compact_space(text[len(prefix) :])
+            return compact_space(text[len(prefix) :]).strip("\"' ")
     return text.strip("\"' ")
 
 
@@ -312,11 +312,14 @@ def json_value_from_text(text: str) -> Any:
     object_end = raw.rfind("}")
     array_start = raw.find("[")
     array_end = raw.rfind("]")
+    candidates: list[tuple[int, int]] = []
     if object_start >= 0 and object_end >= object_start:
-        if array_start < 0 or object_start <= array_start:
-            raw = raw[object_start : object_end + 1]
-    elif array_start >= 0 and array_end >= array_start:
-        raw = raw[array_start : array_end + 1]
+        candidates.append((object_start, object_end))
+    if array_start >= 0 and array_end >= array_start:
+        candidates.append((array_start, array_end))
+    if candidates:
+        start, end = min(candidates, key=lambda candidate: candidate[0])
+        raw = raw[start : end + 1]
     return json.loads(raw)
 
 

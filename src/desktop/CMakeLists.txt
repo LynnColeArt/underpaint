@@ -538,6 +538,10 @@ if(NOT ANDROID AND NOT EMSCRIPTEN)
 	add_dependencies(drawpile underpaint-ai-worker-stub)
 endif()
 
+if(TESTS AND ALLOW_QTEST_TESTS AND NOT ANDROID AND NOT EMSCRIPTEN)
+	add_subdirectory(tests)
+endif()
+
 if(AUDIO_IMPL STREQUAL "MINIAUDIO")
 	add_subdirectory(bundled/miniaudio)
 	target_link_libraries(drawpile PRIVATE miniaudio)
